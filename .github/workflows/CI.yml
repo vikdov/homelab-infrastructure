@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint, format, validate, docs drift, Checkov, Trivy.
+  # Runs the SAME hooks as local dev. Tool versions come from mise.toml
+  # (terraform, tflint, terraform-docs, checkov, gitleaks, trivy), so there is
+  # one place to bump versions.
+  # ---------------------------------------------------------------------------
+  pre-commit:
+    name: Pre-commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4 # pin to commit SHAs in production
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install tools from mise.toml
+        uses: jdx/mise-action@v2
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Cache pre-commit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Initialize TFLint plugins
+        run: tflint --init --config .tflint.hcl
+
+      # gitleaks: needs staged changes, so it runs in the `secrets` job instead.
+      # no-commit-to-branch: would always fail on push to main.
+      # Includes the fan-out validate-stages.sh hook and terraform_validate.
+      - name: Run pre-commit (commit stage)
+        env:
+          SKIP: gitleaks,no-commit-to-branch
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      # Trivy is configured as a pre-push hook, so run that stage explicitly.
+      - name: Run Trivy (pre-push stage)
+        run: pre-commit run --all-files --hook-stage pre-push terraform_trivy
+
+  # ---------------------------------------------------------------------------
+  # Full-history secret scan (CI counterpart of the staged-only local hook).
+  # Uses the mise-pinned binary instead of gitleaks-action, so no org license.
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools from mise.toml
+        uses: jdx/mise-action@v2
+
+      - name: Gitleaks
+        run: gitleaks git --redact --verbose .
+
+  # ---------------------------------------------------------------------------
+  # Ansible: pre-commit does not cover this.
+  # ---------------------------------------------------------------------------
+  ansible:
+    name: Ansible
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: YAML lint
+        run: yamllint -s .
+
+      - name: Ansible lint
+        working-directory: ansible
+        run: ansible-lint
+
+      - name: Ansible syntax check
+        working-directory: ansible
+        run: |
+          for playbook in playbooks/*.yml; do
+            echo "==> ${playbook}"
+            ansible-playbook --syntax-check "$playbook"
+          done
+
+  # ---------------------------------------------------------------------------
+  # RAM budget: pre-commit does not cover this.
+  # ---------------------------------------------------------------------------
+  ram-budget:
+    name: RAM budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install PyYAML
+
+      - name: Allowed profile combinations must fit
+        run: |
+          python3 scripts/profile.py budget core apps
+          python3 scripts/profile.py budget core k8s
+          python3 scripts/profile.py budget core k8s lab
+
+      - name: Over-budget combination must be rejected
+        run: "! python3 scripts/profile.py budget core apps k8s"
+
+  # ---------------------------------------------------------------------------
+  # Single required status check for branch protection.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI gate
+    if: always()
+    needs: [pre-commit, secrets, ansible, ram-budget]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all jobs to succeed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "Job results: $RESULTS"
+          if echo "$RESULTS" | grep -qv -e '"success"' -e '^\[$' -e '^\]$'; then
+            echo "CI failed"
+            exit 1
+          fi
+          echo "All CI checks passed."

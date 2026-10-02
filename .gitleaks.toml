@@ -1,0 +1,40 @@
+# .gitleaks.toml — homelab-infrastructure
+title = "homelab-infrastructure gitleaks config"
+
+# Without this, a custom config REPLACES the built-in ruleset (AWS keys,
+# private keys, HashiCorp tokens, generic API keys, ...).
+[extend]
+useDefault = true
+
+# Only allowlist files that are *meant* to hold placeholders or hashes.
+# Do NOT allowlist .tfvars / .tfstate / .tfplan: those are where real
+# secrets actually land. State/plan files are blocked by the pre-commit
+# `forbid-state-and-plan-files` hook instead.
+[allowlist]
+description = "Known false-positive paths"
+paths = [
+  '''(^|/)\.terraform\.lock\.hcl$''', # provider hashes look like high-entropy strings
+  '''\.tfvars\.example$''',
+  '''(^|/)\.env\.example$''',
+]
+
+# Proxmox VE token in its native format: USER@REALM!TOKENID=UUID
+# (high signal; no entropy tuning needed)
+[[rules]]
+id = "proxmox-api-token"
+description = "Proxmox VE API token (USER@REALM!TOKENID=UUID)"
+regex = '''[A-Za-z0-9._-]+@[A-Za-z0-9_.-]+![A-Za-z0-9_-]+=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+tags = ["proxmox", "api-key"]
+
+# Hardcoded literal in the provider's token attributes
+# (bpg: api_token, Telmate: pm_api_token_secret). `$` is excluded from the
+# value so "${var.x}" interpolations don't match; entropy applies to the
+# captured value only because secretGroup is set.
+[[rules]]
+id = "proxmox-token-attribute"
+description = "Hardcoded Proxmox provider token/secret"
+regex = '''(?i)\b(?:pm_)?api_token(?:_secret)?\s*=\s*["']([^"'$\s]{8,})["']'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["api_token"]
+tags = ["terraform", "proxmox", "api-key"]

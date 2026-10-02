@@ -1,0 +1,23 @@
+[tools]
+actionlint = "1.7.12"
+ansible-core = "2.21.4"
+checkov = "3.3.21"
+gitleaks = "8.24.2"
+pre-commit = "4.6.2"
+terraform = "1.16.4"
+terraform-docs = "0.24.0"
+tflint = "0.64.0"
+trivy = "0.74.0"
+
+[tasks.check]
+env = { SKIP = "no-commit-to-branch" }
+description = "pre-commit on tracked + untracked (non-ignored) files"
+run = "scripts/check.sh"
+
+[tasks.fmt]
+description = "Use built in terraform fmt to format all terraform files"
+run = "terraform fmt -recursive"
+
+[env]
+# Ensures the root .env file is loaded into your environment
+_.file = ".env"

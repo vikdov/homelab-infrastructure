@@ -1,0 +1,133 @@
+# =============================================================================
+# .pre-commit-config.yaml — multi-stage Terraform repo
+# =============================================================================
+# Assumed layout (adjust the regexes below if yours differs):
+#   terraform/
+#     00-bootstrap/   01-platform/   02-workload/    <- independent root modules
+#     _shared/                                       <- shared files (e.g. versions.tf), NOT a root module
+#     modules/                                       <- reusable modules
+#
+# Setup:   pre-commit install --install-hooks
+# Run all: pre-commit run --all-files
+# Update:  pre-commit autoupdate   (review the diff, then commit)
+# Tools (terraform, tflint, terraform-docs, checkov, gitleaks) come from
+# mise / your toolchain manager, NOT from pre-commit. Run `tflint --init` once.
+# =============================================================================
+
+minimum_pre_commit_version: "3.2.0"
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  # ---------------------------------------------------------------------------
+  # 1. Secrets (first: cheap, and fails fast)
+  # ---------------------------------------------------------------------------
+  # Local hook: the binary comes from mise (pinned + checksummed), so there is
+  # no upstream `rev` to drift out of sync with it. pass_filenames MUST be
+  # false: gitleaks treats positional args as the repo path, and pre-commit
+  # would otherwise append every filename to the command.
+  # Scans staged changes only; the full working-tree/history scan is a
+  # separate step (see `gitleaks dir .` / CI `gitleaks git .`).
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged changes)
+        entry: gitleaks git --pre-commit --staged --redact --verbose
+        language: system
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # 2. General hygiene
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-symlinks # catches broken symlinks (relevant if _shared/ is symlinked)
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: no-commit-to-branch
+        args: [--branch, main, --branch, master]
+
+  # ---------------------------------------------------------------------------
+  # 3. Repo-specific guards
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      # State and plan files routinely contain secrets in plaintext.
+      - id: forbid-state-and-plan-files
+        name: forbid terraform state / plan files
+        entry: Terraform state/plan files must never be committed
+        language: fail
+        files: '(^|/)(\.terraform/.*|.*\.tfstate(\.backup)?|.*\.tfplan)$'
+
+      # Fan-out: the per-directory hooks below only look at directories that
+      # contain changed files. If _shared/ or modules/ change, every stage that
+      # consumes them must be re-validated. This is the intentional coupling.
+      - id: validate-all-stages-on-shared-change
+        name: terraform validate (all stages) when _shared/ or modules/ change
+        entry: scripts/validate-stages.sh
+        language: script
+        files: '^terraform/(_shared|modules)/.*\.(tf|tfvars|hcl)$'
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # 4. Terraform
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.108.1
+    hooks:
+      # Formatting: safe everywhere, including _shared/.
+      - id: terraform_fmt
+
+      # Validation: runs per directory containing changed .tf files, with its
+      # own `init -backend=false`, so each stage is validated in isolation
+      # (no cross-stage state or files are touched). _shared/ is excluded
+      # because it is not a root module; stages consuming it are covered by
+      # the fan-out hook above.
+      - id: terraform_validate
+        exclude: ^terraform/_shared/
+        args:
+          - --hook-config=--retry-once-with-cleanup=true
+
+      # Linting (not redundant with the security scanners).
+      - id: terraform_tflint
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+
+      # Docs: one README per stage and per module, generated from that
+      # directory's own inputs/outputs. Anything you write ABOVE the
+      # <!-- BEGIN_TF_DOCS --> marker (purpose, dependencies on earlier
+      # stages, run order) is preserved. _shared/ and the repo root README
+      # are deliberately not generated.
+      - id: terraform_docs
+        exclude: ^terraform/_shared/
+        args:
+          - --hook-config=--path-to-file=README.md
+          - --hook-config=--add-to-existing-file=true
+          - --hook-config=--create-file-if-not-exist=true
+
+      # Security / compliance: Checkov is the single scanner in pre-commit.
+      - id: terraform_checkov
+        args:
+          - --args=--quiet
+          - --args=--compact
+          - --args=--framework=terraform
+
+      # Optional second-opinion scanner. Prefer running it in CI rather than
+      # on every commit (overlaps heavily with Checkov; separate suppression
+      # syntax to maintain):
+      - id: terraform_trivy
+        stages: [pre-push]
+        args:
+          - --args=--severity=HIGH,CRITICAL
+          - --args=--skip-dirs="**/.terraform"
