@@ -157,4 +157,3 @@ resource "proxmox_acl" "this" {
   path      = each.value.path
   propagate = true
 }
-

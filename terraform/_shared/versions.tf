@@ -11,8 +11,8 @@
 # and Proxmox provider versions.
 #
 terraform {
-  # Allow Terraform 1.15.x releases, but not 1.16 or newer.
-  required_version = "~> 1.15.0"
+  # Allow Terraform 1.16.x releases, but not 1.17 or newer.
+  required_version = "~> 1.16.0"
 
   required_providers {
     proxmox = {

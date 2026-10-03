@@ -24,5 +24,3 @@ provider "proxmox" {
   # Prefer a properly trusted certificate in normal operation.
   insecure = var.proxmox_insecure
 }
-
-
