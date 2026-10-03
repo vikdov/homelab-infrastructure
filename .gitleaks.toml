@@ -33,7 +33,7 @@ tags = ["proxmox", "api-key"]
 [[rules]]
 id = "proxmox-token-attribute"
 description = "Hardcoded Proxmox provider token/secret"
-regex = '''(?i)\b(?:pm_)?api_token(?:_secret)?\s*=\s*["']([^"'$\s]{8,})["']'''
+regex = '''(?i)api_token(?:_secret)?\s*=\s*["']([^"'$\s]{8,})["']'''
 secretGroup = 1
 entropy = 3.0
 keywords = ["api_token"]
