@@ -47,6 +47,7 @@ resource "proxmox_virtual_environment_role" "terraform" {
     # System & Consoles
     "Sys.Audit",
     "Sys.Console",
+    "Sys.Modify", # required for proxmox_download_file
     # VM Lifecycle & Config
     "VM.Allocate",
     "VM.Audit",
