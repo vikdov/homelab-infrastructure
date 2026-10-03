@@ -45,6 +45,9 @@ jobs:
           SKIP: gitleaks,no-commit-to-branch
         run: pre-commit run --all-files --show-diff-on-failure
 
+      - name: Warm Trivy checks cache
+        run: trivy config --quiet --skip-version-check .
+
       # Trivy is configured as a pre-push hook, so run that stage explicitly.
       - name: Run Trivy (pre-push stage)
         run: pre-commit run --all-files --hook-stage pre-push terraform_trivy
@@ -81,16 +84,19 @@ jobs:
         uses: jdx/mise-action@v2
 
       - name: Install Ansible collections
+        if: hashFiles('ansible/requirements.yml') != ''
         run: ansible-galaxy collection install -r ansible/requirements.yml
 
       - name: YAML lint
         run: yamllint -s .
 
       - name: Ansible lint
+        if: hashFiles('ansible/playbooks/*.yml') != ''
         working-directory: ansible
         run: ansible-lint
 
       - name: Ansible syntax check
+        if: hashFiles('ansible/playbooks/*.yml') != ''
         working-directory: ansible
         run: |
           for playbook in playbooks/*.yml; do
