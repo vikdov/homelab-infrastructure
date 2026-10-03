@@ -13,6 +13,18 @@ variable "proxmox_insecure" {
   default     = false
 }
 
+variable "proxmox_username" {
+  description = "Proxmox username"
+  type        = string
+  default     = "root@pam"
+}
+
+variable "proxmox_password" {
+  description = "Proxmox password"
+  type        = string
+  sensitive   = true
+}
+
 # ---------------------------------------------------------------------------
 # Resource pools
 # ---------------------------------------------------------------------------
@@ -53,4 +65,22 @@ variable "extra_service_accounts" {
     ansible    = { comment = "Ansible dynamic inventory", role_id = "PVEAuditor" }
     monitoring = { comment = "Prometheus exporter", role_id = "PVEAuditor" }
   }
+}
+
+# --------------------------------------------------------------------------
+# Proxmox node and storage
+# --------------------------------------------------------------------------
+#
+# For snippets.tf which are used by templates.tf
+#
+variable "node_name" {
+  description = "Proxmox node name"
+  type        = string
+  default     = "pve"
+}
+
+variable "file_datastore" {
+  description = "Proxmox storage ID for downloaded files (snippets, cloud-init, ISO, etc.)"
+  type        = string
+  default     = "local"
 }
