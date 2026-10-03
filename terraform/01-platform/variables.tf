@@ -187,13 +187,9 @@ variable "vnets" {
       for v in var.vnets :
       length(trimspace(v.alias)) > 0 &&
       can(cidrnetmask(v.cidr)) &&
-      can(cidrhost(v.cidr, 1)) &&
-      can(regex(
-        "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$",
-        v.gateway
-      ))
+      can(cidrcontains(v.cidr, v.gateway))
     ])
 
-    error_message = "Each VNet must have a non-empty alias, a valid IPv4 CIDR, and a valid IPv4 gateway address."
+    error_message = "Each VNet must have a non-empty alias, a valid IPv4 CIDR, and a gateway address that belongs to that specific CIDR."
   }
 }
