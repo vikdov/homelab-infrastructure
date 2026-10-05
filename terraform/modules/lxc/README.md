@@ -40,7 +40,7 @@ No modules.
 | <a name="input_networks"></a> [networks](#input\_networks) | One entry per NIC (eth0, eth1, ...). ip is CIDR or "dhcp". | <pre>list(object({<br/>    bridge  = string<br/>    ip      = string<br/>    gateway = optional(string)<br/>  }))</pre> | n/a | yes |
 | <a name="input_node_name"></a> [node\_name](#input\_node\_name) | Proxmox node on which the container is created | `string` | n/a | yes |
 | <a name="input_on_boot"></a> [on\_boot](#input\_on\_boot) | Start the container automatically when the Proxmox node boots | `bool` | `true` | no |
-| <a name="input_pool_id"></a> [pool\_id](#input\_pool\_id) | Proxmox resource pool for the container | `string` | n/a | yes |
+| <a name="input_pool_id"></a> [pool\_id](#input\_pool\_id) | Proxmox resource pool for the container | `string` | `null` | no |
 | <a name="input_protection"></a> [protection](#input\_protection) | Prevent accidental deletion or destructive changes to the container | `bool` | n/a | yes |
 | <a name="input_ssh_public_keys"></a> [ssh\_public\_keys](#input\_ssh\_public\_keys) | SSH public keys injected into the container | `list(string)` | n/a | yes |
 | <a name="input_started"></a> [started](#input\_started) | Whether the container should be running after creation | `bool` | `true` | no |

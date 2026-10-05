@@ -184,10 +184,15 @@ variable "vnets" {
   }
   validation {
     condition = alltrue([
-      for v in var.vnets :
-      length(trimspace(v.alias)) > 0 &&
-      can(cidrnetmask(v.cidr)) &&
-      can(cidrcontains(v.cidr, v.gateway))
+      length(var.vnets) > 0,
+      alltrue([
+        for v in var.vnets :
+        length(trimspace(v.alias)) > 0 &&
+        can(cidrnetmask(v.cidr)) &&
+        can(cidrhost(v.cidr, 1)) &&
+        # Strip the mask first, then compare the first 3 octets safely
+        join(".", slice(split(".", v.gateway), 0, 3)) == join(".", slice(split(".", split("/", v.cidr)[0]), 0, 3))
+      ])
     ])
 
     error_message = "Each VNet must have a non-empty alias, a valid IPv4 CIDR, and a gateway address that belongs to that specific CIDR."

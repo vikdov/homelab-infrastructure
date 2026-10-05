@@ -17,11 +17,13 @@ variable "node_name" {
 variable "pool_id" {
   description = "Proxmox resource pool for the VM"
   type        = string
+  default     = null
 }
 
 variable "template_vm_id" {
   description = "VM ID of the template used to clone this guest"
   type        = number
+  default     = null
 }
 
 variable "image_file_id" {
