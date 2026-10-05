@@ -28,7 +28,7 @@ output "inventory" {
         ips = [
           for n in try(v.networks, []) :
           split("/", n.ip)[0]
-          if n.ip != "dhcp" && strcontains(n.ip, "/")
+          if n.ip != null && n.ip != "dhcp" && strcontains(n.ip, "/")
         ]
       }
     },
@@ -42,7 +42,7 @@ output "inventory" {
         ips = [
           for n in try(v.networks, []) :
           split("/", n.ip)[0]
-          if n.ip != "dhcp" && strcontains(n.ip, "/")
+          if n.ip != null && n.ip != "dhcp" && strcontains(n.ip, "/")
         ]
       }
     }
@@ -52,9 +52,15 @@ output "inventory" {
 output "public_ssh_keys" {
   description = "Map of resolved SSH public keys injected into each guest"
   value = {
-    vms  = local.resolved_vm_guest_keys
-    lxcs = local.resolved_lxc_guest_keys
+    vms  = local.resolved_vm_guest_ssh_keys
+    lxcs = local.resolved_lxc_guest_ssh_keys
   }
   sensitive = true
 
+}
+
+output "global_ssh_keys" {
+  description = "List of global SSH public keys injected into all guests"
+  value       = var.global_ssh_keys
+  sensitive   = true
 }

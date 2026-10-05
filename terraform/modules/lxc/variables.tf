@@ -17,6 +17,7 @@ variable "node_name" {
 variable "pool_id" {
   description = "Proxmox resource pool for the container"
   type        = string
+  default     = null
 }
 
 # Hardware Resources

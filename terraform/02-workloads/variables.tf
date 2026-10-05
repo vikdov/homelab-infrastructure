@@ -49,9 +49,11 @@ variable "lxc_guests" {
       ip      = string
       gateway = optional(string)
     }))
-    dns_servers      = optional(list(string), null)
-    ssh_public_keys  = optional(list(string), [])
-    lxc_template_key = optional(string, "debian13") # Matches the key in Stage 01
+    dns_servers     = optional(list(string), null)
+    ssh_public_keys = optional(list(string), [])
+    # Defaults to null for dynamic fallback. If supplied should match a key for
+    # downloaded image or created template in the stage 01
+    lxc_template_key = optional(string, null)
     nesting          = optional(bool, false)
     protection       = optional(bool, false)
     tags             = optional(list(string), [])
@@ -105,13 +107,6 @@ variable "lxc_guests" {
       networks = [
         { bridge = "infra", ip = "10.10.10.11/24", gateway = "10.10.10.1" }
       ]
-      mount_points = [
-        {
-          path          = "/mnt/hdd"
-          volume        = "/mnt/hdd"
-          mount_options = ["bind"]
-        }
-      ]
       tags = ["backup"]
     }
   }
@@ -119,9 +114,11 @@ variable "lxc_guests" {
 variable "vm_guests" {
   description = "Map of Virtual Machine guest specifications keyed by host name."
   type = map(object({
-    vmid      = number
-    pool_id   = optional(string, null)
-    image_key = optional(string, "debian13") # Matches the key in Stage 01
+    vmid    = number
+    pool_id = optional(string, null)
+    # Defaults to null for dynamic fallback. If supplied should match a key for
+    # downloaded image or created template in the stage 01
+    image_key = optional(string, null)
     cores     = number
     memory_mb = number
     disk_gb   = number
@@ -144,7 +141,7 @@ variable "vm_guests" {
   }))
 
   default = {
-    id = {
+    identity = {
       vmid      = 120
       pool_id   = "core"
       cores     = 1
@@ -156,12 +153,11 @@ variable "vm_guests" {
       tags = ["identity"]
     }
     apps = {
-      vmid        = 200
-      pool_id     = "apps"
-      cores       = 2
-      memory_mb   = 4096
-      disk_gb     = 40
-      extra_disks = [{ size_gb = 200, datastore_id = "hdd" }]
+      vmid      = 200
+      pool_id   = "apps"
+      cores     = 2
+      memory_mb = 4096
+      disk_gb   = 40
       networks = [
         { bridge = "apps", ip = "10.10.30.10/24", gateway = "10.10.30.1" }
       ]
