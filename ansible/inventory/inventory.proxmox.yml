@@ -1,0 +1,40 @@
+# inventory.proxmox.yml
+plugin: community.proxmox.proxmox
+
+# User loaded from file, remaining credentials (url, token_id, token_secret)
+# will be automatically picked up from environment variables:
+# PROXMOX_URL, PROXMOX_TOKEN_ID, PROXMOX_TOKEN_SECRET, PROXMOX_USER
+
+validate_certs: false
+want_facts: true
+
+# Prevent guest VMs/containers from inheriting the hypervisor node's IP
+want_proxmox_nodes_ansible_host: false
+
+compose:
+  # Static IP from cloud-init / LXC config, e.g. "192.168.1.50/24" -> "192.168.1.50"
+  ansible_host: >-
+    (proxmox_ipconfig0.ip | default(proxmox_net0.ip, true)).split('/')[0]
+  # If using DHCP:
+#  ansible_host: >-
+#    proxmox_agent_interfaces | map(attribute='ip-addresses') | flatten
+#    | selectattr('ip-address-type','eq','ipv4')
+#    | map(attribute='ip-address') | reject('match','^127\.') | first
+
+# Automatically group hosts by Proxmox tags (e.g., tag_web, tag_db)
+keyed_groups:
+  - key: proxmox_tags_parsed
+    prefix: tag
+    separator: "_"
+  - key: proxmox_node
+    prefix: pve_node
+    separator: "_"
+
+filters:
+  - proxmox_template == 0
+# - proxmox_status == 'running' # add if you want stopped guests visible
+
+cache: true
+cache_plugin: jsonfile
+cache_connection: .cache/inventory
+cache_timeout: 300

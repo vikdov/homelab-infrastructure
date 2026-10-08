@@ -1,0 +1,11 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .collections/
+  - .git/
+# Temporarily disable some rules during development:
+skip_list:
+  - meta-incorrect
+  - meta-no-tags
+  - meta-video-links

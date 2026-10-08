@@ -1,2 +1,7 @@
 ---
+# Pin exact versions once you are happy: `ansible-galaxy collection list`
 collections:
+  - name: ansible.posix
+  - name: community.general
+  - name: community.proxmox
+    version: "2.0.0"

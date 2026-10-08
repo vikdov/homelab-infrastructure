@@ -56,9 +56,10 @@ variable "pools" {
 variable "extra_service_accounts" {
   description = "Additional Proxmox service accounts to create"
   type = map(object({
-    comment = string
-    role_id = string
-    path    = optional(string, "/")
+    comment    = string
+    role_id    = string
+    path       = optional(string, "/")
+    token_name = optional(string, "api")
   }))
 
   default = {

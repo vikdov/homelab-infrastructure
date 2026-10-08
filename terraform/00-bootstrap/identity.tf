@@ -133,7 +133,7 @@ resource "proxmox_user_token" "this" {
   for_each = local.service_accounts
 
   user_id               = proxmox_virtual_environment_user.this[each.key].user_id
-  token_name            = "api"
+  token_name            = each.value.token_name
   comment               = "API token for ${each.key}"
   privileges_separation = false
 }

@@ -1,6 +1,5 @@
 [tools]
 actionlint = "1.7.12"
-ansible-core = "2.21.4"
 checkov = "3.3.21"
 gitleaks = "8.24.2"
 "pipx:ansible-lint" = "26.9.0"
@@ -10,6 +9,7 @@ terraform = "1.16.4"
 terraform-docs = "0.24.0"
 tflint = "0.64.0"
 trivy = "0.74.0"
+uv = "0.12.23"
 yamllint = "1.38.0"
 
 [tasks.check]
@@ -24,3 +24,5 @@ run = "terraform fmt -recursive"
 [env]
 # Ensures the root .env file is loaded into your environment
 _.file = ".env"
+# Auto-create and sync root .venv using uv
+_.python.venv = { path = ".venv", create = true }
