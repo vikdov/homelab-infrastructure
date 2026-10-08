@@ -131,3 +131,41 @@ repos:
         args:
           - --args=--severity=HIGH,CRITICAL
           - --args=--skip-dirs="**/.terraform"
+  # ---------------------------------------------------------------------------
+  # 5. Ansible
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: ansible-lint
+        name: ansible-lint
+        # "$@" passes the staged filenames forwarded by pre-commit into ansible-lint
+        entry: ansible-lint
+        language: system
+        pass_filenames: true
+        files: "^ansible/"
+  # ---------------------------------------------------------------------------
+  # 6. Guards and linters (binaries come from mise)
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      # Matches .env, .env.local, .env.prod, ... but NOT .env.example.
+      # Only fires if someone force-adds an ignored file (git add -f).
+      - id: forbid-env-files
+        name: forbid .env files
+        entry: Real .env files must never be committed (use .env.example)
+        language: fail
+        files: '(^|/)\.env(\.[^/]+)?$'
+        exclude: '(^|/)\.env\.(example|sample|template)$'
+
+      - id: yamllint
+        name: yamllint
+        entry: yamllint --strict
+        language: system
+        types: [yaml]
+        pass_filenames: true
+
+      - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        files: '^\.github/workflows/.*\.ya?ml$'

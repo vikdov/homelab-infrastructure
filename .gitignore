@@ -1,11 +1,29 @@
-.terraform/
+# Environment & Secrets
+.env
+*.env
+**/.env/
+.venv/
+.vault_pass*
+.vault-pass*
+
+# Python & Caches
+**/__pycache__/
+*.pyc
+**/.cache/
+
+# Terraform
+**/.terraform/
 *.tfstate
 *.tfstate.*
 *.tfvars
 *.tfvars.json
 *_override.tf
 *_override.tf.json
-**/.secrets/
-**/secrets/
-**/.env/
-*.env
+.terraformrc
+terraform.rc
+
+# Ansible
+**/.ansible/
+**/.collections/
+**/.roles/
+*.retry
