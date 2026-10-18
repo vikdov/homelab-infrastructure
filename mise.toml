@@ -1,16 +1,33 @@
 [tools]
-actionlint = "1.7.12"
-checkov = "3.3.21"
-gitleaks = "8.24.2"
-"pipx:ansible-lint" = "26.9.0"
-pre-commit = "4.6.2"
 python = "3.14.8"
+uv = "0.12.23"
 terraform = "1.16.4"
 terraform-docs = "0.24.0"
 tflint = "0.64.0"
 trivy = "0.74.0"
-uv = "0.12.23"
+checkov = "3.3.21"
+gitleaks = "8.24.2"
+actionlint = "1.7.12"
 yamllint = "1.38.0"
+pre-commit = "4.6.2"
+# The Taskfile needs go-task >= 3.37. Pin an exact version once chosen
+# (see: mise ls-remote task). ansible-lint is NOT here: it is in the uv
+# dev dependency group so it shares one environment with ansible-core.
+task = "3"
+
+[env]
+# Load the root .env (TF_VAR_*, PROXMOX_VE_*, ...) into every mise task/shell.
+_.file = ".env"
+# Put the uv-managed virtualenv on PATH (ansible-playbook, ansible-lint, ...).
+# The venv itself is created and populated by `mise run setup`.
+_.path = [".venv/bin"]
+
+[tasks.setup]
+description = "Install Python dependencies and Ansible collections"
+run = [
+  "uv sync --locked",
+  "uv run ansible-galaxy collection install -r ansible/requirements.yml",
+]
 
 [tasks.check]
 env = { SKIP = "no-commit-to-branch" }
@@ -20,9 +37,3 @@ run = "scripts/check.sh"
 [tasks.fmt]
 description = "Use built in terraform fmt to format all terraform files"
 run = "terraform fmt -recursive"
-
-[env]
-# Ensures the root .env file is loaded into your environment
-_.file = ".env"
-# Auto-create and sync root .venv using uv
-_.python.venv = { path = ".venv", create = true }
