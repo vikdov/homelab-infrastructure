@@ -115,6 +115,6 @@ resource "proxmox_virtual_environment_vm" "template" {
     }
     # Snippet is created in 00-bootstrap (SSH/root); it must exist before
     # this stage is applied. ID format: <datastore>:snippets/<file_name>
-    user_data_file_id = "${var.file_datastore}:snippets/${var.template_user_data_file_name}"
+    vendor_data_file_id = "${var.file_datastore}:snippets/${var.template_user_data_file_name}"
   }
 }

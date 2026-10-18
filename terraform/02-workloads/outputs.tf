@@ -14,6 +14,11 @@
 # typically needs the host address rather than the network notation.
 # ---------------------------------------------------------------------------
 
+output "node_name" {
+  description = "The PVE node name (from stage 01)"
+  value       = local.node_name
+}
+
 output "inventory" {
   description = "Guests with vmid, type, pool and IPs (no CIDR)"
 
@@ -55,12 +60,17 @@ output "public_ssh_keys" {
     vms  = local.resolved_vm_guest_ssh_keys
     lxcs = local.resolved_lxc_guest_ssh_keys
   }
-  sensitive = true
-
 }
 
 output "global_ssh_keys" {
   description = "List of global SSH public keys injected into all guests"
   value       = var.global_ssh_keys
-  sensitive   = true
+}
+
+output "ansible_site_vars" {
+  description = "Paste into inventory/group_vars/all/site.yml so Ansible and Proxmox agree."
+  value = yamlencode({
+    bootstrap_mgmt_cidrs       = local.mgmt_sources
+    bootstrap_monitoring_cidrs = local.sources[var.monitoring_guest]
+  })
 }

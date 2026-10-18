@@ -49,8 +49,9 @@ resource "proxmox_virtual_environment_container" "this" {
     for_each = var.networks
     content {
       # Array positioning generates eth0, eth1, etc., matching the ip_config list index.
-      name   = "eth${network_interface.key}"
-      bridge = network_interface.value.bridge
+      name     = "eth${network_interface.key}"
+      bridge   = network_interface.value.bridge
+      firewall = true
     }
   }
 
@@ -94,5 +95,11 @@ resource "proxmox_virtual_environment_container" "this" {
   wait_for_ip {
     ipv4 = true
     ipv6 = false
+  }
+
+  # Ignore template changes after initial creation to prevent
+  # unnecessary container recreation.
+  lifecycle {
+    ignore_changes = [operating_system[0].template_file_id]
   }
 }

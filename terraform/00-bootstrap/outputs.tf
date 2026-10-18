@@ -21,3 +21,8 @@ output "api_tokens" {
     for k, t in proxmox_user_token.this : k => t.value
   }
 }
+
+output "pve_url" {
+  description = "Trusted URL of the PVE web UI/API (null when ACME is disabled)."
+  value       = var.acme_enabled ? "https://${var.acme_domain}:8006/" : null
+}

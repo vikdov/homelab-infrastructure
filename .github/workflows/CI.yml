@@ -28,6 +28,9 @@ jobs:
       - name: Install tools from mise.toml
         uses: jdx/mise-action@v2
 
+      - name: Install Python deps and Ansible collections
+        run: mise run setup
+
       - name: Cache pre-commit
         uses: actions/cache@v4
         with:
@@ -83,17 +86,8 @@ jobs:
       - name: Install tools from mise.toml
         uses: jdx/mise-action@v2
 
-      - name: Install Ansible collections
-        if: hashFiles('ansible/requirements.yml') != ''
-        run: ansible-galaxy collection install -r ansible/requirements.yml
-
-      - name: YAML lint
-        run: yamllint -s .
-
-      - name: Ansible lint
-        if: hashFiles('ansible/playbooks/*.yml') != ''
-        working-directory: ansible
-        run: ansible-lint
+      - name: Install Python deps and Ansible collections
+        run: mise run setup
 
       - name: Ansible syntax check
         if: hashFiles('ansible/playbooks/*.yml') != ''
@@ -101,7 +95,7 @@ jobs:
         run: |
           for playbook in playbooks/*.yml; do
             echo "==> ${playbook}"
-            ansible-playbook --syntax-check "$playbook"
+            uv run --locked ansible-playbook --syntax-check "$playbook"
           done
 
   # ---------------------------------------------------------------------------

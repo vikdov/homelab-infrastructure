@@ -3,7 +3,7 @@
 # =============================================================================
 # Assumed layout (adjust the regexes below if yours differs):
 #   terraform/
-#     00-bootstrap/   01-platform/   02-workload/    <- independent root modules
+#     00-bootstrap/   01-platform/   02-workloads/    <- independent root modules
 #     _shared/                                       <- shared files (e.g. versions.tf), NOT a root module
 #     modules/                                       <- reusable modules
 #
@@ -138,8 +138,7 @@ repos:
     hooks:
       - id: ansible-lint
         name: ansible-lint
-        # "$@" passes the staged filenames forwarded by pre-commit into ansible-lint
-        entry: ansible-lint
+        entry: uv run --locked ansible-lint
         language: system
         pass_filenames: true
         files: "^ansible/"

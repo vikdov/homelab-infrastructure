@@ -32,7 +32,7 @@ keyed_groups:
 
 filters:
   - proxmox_template == 0
-# - proxmox_status == 'running' # add if you want stopped guests visible
+  - proxmox_status == "running"
 
 cache: true
 cache_plugin: jsonfile

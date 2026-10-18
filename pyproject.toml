@@ -1,21 +1,27 @@
 [project]
 name = "homelab-infrastructure"
 version = "0.1.0"
-description = "Add your description here"
+description = "Full Repository for my Homelab Infrastructure"
 readme = "README.md"
-authors = [
-    { name = "vikdov", email = "mr.dovgoshiya@gmail.com" }
-]
+authors = [{ name = "vikdov" }]
 requires-python = ">=3.14"
+
+# Runtime dependencies: Ansible engine and the libraries used by scripts/*.py.
+# Ansible collections (community.proxmox etc.) are NOT Python packages; they
+# are installed from ansible/requirements.yml by `mise run setup`.
 dependencies = [
-    "ansible-core>=2.21.5",
-    "pyyaml>=6.0.3",
-    "requests>=2.34.2",
+  "ansible-core>=2.21.5",
+  "proxmoxer>=2.3.0",
+  "pyyaml>=6.0.3",
+  "requests>=2.34.2",
 ]
 
-[project.scripts]
-homelab-infrastructure = "homelab_infrastructure:main"
+# Dev tooling lives in the same resolved environment as ansible-core, so the
+# linter always checks against the Ansible version that actually runs.
+[dependency-groups]
+dev = ["ansible-lint>=26.9.0"]
 
-[build-system]
-requires = ["uv_build>=0.12.23,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv]
+# This repository holds playbooks, scripts and Terraform, not an installable
+# Python package: uv only manages the environment, nothing is built.
+package = false

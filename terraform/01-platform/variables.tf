@@ -43,13 +43,14 @@ variable "lxc_templates" {
     download_url       = string
     file_name          = optional(string)
     checksum           = optional(string)
-    checksum_algorithm = optional(string, "sha256")
+    checksum_algorithm = optional(string, "sha512")
   }))
 
   default = {
     debian13 = {
       description  = "Debian 13 LXC template"
       download_url = "http://download.proxmox.com/images/system/debian-13-standard_13.6-1_amd64.tar.zst"
+      checksum     = "4c0c27ca6ceab5ef0b84db57825a00f26157ef1854bafe97297813e1cbe8ecb8cc9c453cab6b3b0efe1ba193a50c47ece1e41d950e411b8730b835b71e9e754b"
     }
   }
   validation {
@@ -79,13 +80,14 @@ variable "vm_images" {
     download_url       = string
     file_name          = optional(string)
     checksum           = optional(string)
-    checksum_algorithm = optional(string, "sha256")
+    checksum_algorithm = optional(string, "sha512")
   }))
 
   default = {
     debian13 = {
       description  = "debian-13-genericcloud-amd64 generic cloud image"
       download_url = "https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-genericcloud-amd64-20260914-2601.qcow2"
+      checksum     = "95e110dfcdbd0ed8a82a75ed9579802f9950cabf51a810dcc6388e81bc778188713878b9f28d583a0ea602fbf48b35996ae9ad37f584166d8fbd6489df248f53"
     }
   }
   validation {
@@ -141,7 +143,7 @@ variable "template_user_data_file_name" {
 variable "dns_servers" {
   description = "List of DNS servers for all created guests"
   type        = list(string)
-  default     = ["1.1.1.1", "9.9.9.9"]
+  default     = ["10.10.10.2", "1.1.1.1", "9.9.9.9"]
 }
 variable "vnets" {
   description = "Homelab SDN VNets and their IPv4 gateways"

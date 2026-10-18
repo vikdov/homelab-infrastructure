@@ -21,5 +21,9 @@ terraform {
       # Allow 0.114.x releases, but not 0.115 or newer.
       version = "~> 0.114.0"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.9.0" # or whatever recent version you prefer
+    }
   }
 }
