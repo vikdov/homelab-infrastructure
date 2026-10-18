@@ -88,9 +88,10 @@ locals {
   service_accounts = merge(
     {
       terraform = {
-        comment = "Terraform platform stage"
-        role_id = proxmox_virtual_environment_role.terraform.role_id
-        path    = "/"
+        comment    = "Terraform platform stage"
+        role_id    = proxmox_virtual_environment_role.terraform.role_id
+        path       = "/"
+        token_name = "api"
       }
     },
     var.extra_service_accounts
