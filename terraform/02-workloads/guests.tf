@@ -20,7 +20,7 @@ locals {
   # Resolve each lxc_guest's template key: use supplied override or fall back gracefully to first available
   resolved_lxc_guests = {
     for name, config in var.lxc_guests : name => merge(config, {
-      resolved_template_key = coalesce(config.lxc_template_key, local.first_lxc_template)
+      resolved_template_key = config.lxc_template_key != null ? config.lxc_template_key : local.first_lxc_template
     })
   }
   # Resolve final list of SSH keys for each lxc_guest
@@ -45,7 +45,7 @@ locals {
   # 2. Otherwise, fall back to the first available template (or image).
   resolved_vm_guests = {
     for name, config in var.vm_guests : name => merge(config, {
-      resolved_image_key = coalesce(config.image_key, local.first_vm_source_key)
+      resolved_image_key = config.image_key != null ? config.image_key : local.first_vm_source_key
     })
   }
 
@@ -72,47 +72,37 @@ locals {
 # ---------------------------------------------------------------------------
 # Validation Guards (Fail-Fast Assertion Blocks)
 # ---------------------------------------------------------------------------
-check "proxmox_lxc_template_validation" {
-  assert {
-    condition = (
-      length(var.lxc_guests) == 0 || length(local.lxc_template_keys) > 0
-    )
-    error_message = "LXC guests are configured, but no lxc_templates exist in Stage 01 output! Please ensure templates are defined and Stage 01 is applied."
-  }
-
-  assert {
-    condition = alltrue([
-      for name, config in local.resolved_lxc_guests :
-      contains(local.lxc_template_keys, config.resolved_template_key)
-    ])
-    error_message = "Invalid lxc_template_key detected! The specified or fallback template does not exist in downloaded_lxc_templates from Stage 01."
-  }
-}
-
-check "proxmox_vm_image_validation" {
-  assert {
-    condition = (
-      length(var.vm_guests) == 0 || length(local.all_available_vm_keys) > 0
-    )
-    error_message = "VM guests are configured, but no vm_templates or downloaded_vm_images exist in Stage 01 output!"
-  }
-
-  assert {
-    condition = alltrue([
-      for name, config in local.resolved_vm_guests :
-      contains(local.all_available_vm_keys, config.resolved_image_key)
-    ])
-    error_message = "Invalid image_key detected! The specified or fallback image does not exist in Stage 01 outputs."
-  }
-}
-
-check "proxmox_vmid_validation" {
-  assert {
-    condition = (
-      length(local.all_vmids) == length(distinct(local.all_vmids)) &&
-      alltrue([for id in local.all_vmids : id >= 100 && id <= 9999])
-    )
-    error_message = "Proxmox VMID collision detected or invalid range! All LXC and VM IDs must be globally unique and fall between 100 and 9999."
+resource "terraform_data" "guest_checks" {
+  lifecycle {
+    precondition {
+      condition     = length(var.lxc_guests) == 0 || length(local.lxc_template_keys) > 0
+      error_message = "LXC guests are defined, but stage 01 exports no lxc_templates. Apply stage 01 first."
+    }
+    precondition {
+      condition = alltrue([
+        for g in values(local.resolved_lxc_guests) :
+        g.resolved_template_key != null && contains(local.lxc_template_keys, g.resolved_template_key)
+      ])
+      error_message = "An lxc_template_key (or the fallback) does not exist in stage 01 downloaded_lxc_templates."
+    }
+    precondition {
+      condition     = length(var.vm_guests) == 0 || length(local.all_available_vm_keys) > 0
+      error_message = "VM guests are defined, but stage 01 exports no vm_templates or downloaded_vm_images."
+    }
+    precondition {
+      condition = alltrue([
+        for g in values(local.resolved_vm_guests) :
+        g.resolved_image_key != null && contains(local.all_available_vm_keys, g.resolved_image_key)
+      ])
+      error_message = "An image_key (or the fallback) does not exist in stage 01 outputs."
+    }
+    precondition {
+      condition = (
+        length(local.all_vmids) == length(distinct(local.all_vmids)) &&
+        alltrue([for id in local.all_vmids : id >= 100 && id <= 9999])
+      )
+      error_message = "VMID collision or out of range. LXC and VM IDs must be globally unique and between 100 and 9999."
+    }
   }
 }
 
@@ -140,7 +130,7 @@ module "lxc" {
   template_file_id = local.platform.downloaded_lxc_templates[local.resolved_lxc_guests[each.key].resolved_template_key].id
   nesting          = each.value.nesting
   protection       = each.value.protection
-  tags             = each.value.tags
+  tags             = concat(["iac"], each.value.tags)
   started          = each.value.started
   on_boot          = each.value.on_boot
 }
@@ -168,7 +158,7 @@ module "vm" {
     each.value.vendor_data_file_id,
     local.default_vendor_data_id
   )
-  tags    = each.value.tags
+  tags    = concat(["iac"], each.value.tags)
   started = each.value.started
   on_boot = each.value.on_boot
 }

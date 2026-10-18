@@ -76,7 +76,8 @@ resource "proxmox_virtual_environment_vm" "this" {
     for_each = var.networks
 
     content {
-      bridge = network_device.value.bridge
+      bridge   = network_device.value.bridge
+      firewall = true
     }
   }
 

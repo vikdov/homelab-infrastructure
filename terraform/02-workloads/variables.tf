@@ -70,7 +70,7 @@ variable "lxc_guests" {
       memory_mb = 384
       disk_gb   = 4
       networks = [
-        { bridge = "vmbr0", ip = "192.168.1.10/24", gateway = "192.168.1.1" }, # LAN (default route)
+        { bridge = "vmbr0", ip = "192.168.1.100/24", gateway = "192.168.1.1" }, # LAN (default route)
         { bridge = "infra", ip = "10.10.10.2/24" }
       ]
       tags = ["dns", "vpn"]
@@ -82,7 +82,7 @@ variable "lxc_guests" {
       memory_mb = 384
       disk_gb   = 4
       networks = [
-        { bridge = "vmbr0", ip = "192.168.1.11/24", gateway = "192.168.1.1" },
+        { bridge = "vmbr0", ip = "192.168.1.101/24", gateway = "192.168.1.1" },
         { bridge = "dmz", ip = "10.10.20.2/24" }
       ]
       tags = ["ingress"]
