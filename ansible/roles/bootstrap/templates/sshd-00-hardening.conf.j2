@@ -1,0 +1,17 @@
+# Managed by ansible (bootstrap).
+# Named 00-* on purpose: sshd uses the first value it sees, and cloud images ship 50-cloud-init.conf.
+# Do not set UsePAM no here: locked-password accounts (the ansible user) would lose key login.
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PermitEmptyPasswords no
+AllowUsers {{ ([bootstrap_ansible_user] + bootstrap_ssh_extra_allow_users) | join(' ') }}
+MaxAuthTries 3
+LoginGraceTime 30
+ClientAliveInterval {{ bootstrap_ssh_client_alive_interval }}
+ClientAliveCountMax {{ bootstrap_ssh_client_alive_count_max }}
+X11Forwarding no
+AllowAgentForwarding no
+LogLevel VERBOSE

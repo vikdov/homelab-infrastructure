@@ -1,0 +1,140 @@
+---
+bootstrap_version: "1.0.0" # keep quoted: an unquoted 1.10 would parse as the number 1.1
+bootstrap_marker_path: /etc/ansible/facts.d/bootstrap.fact
+
+# --- users -------------------------------------------------------------------
+# # bootstrap_user (first-boot login) is defined in inventory group_vars/all/connection.yml.
+bootstrap_ansible_user: ansible # same default as inventory connection.yml
+# REQUIRED: Define as a YAML list of public key strings, e.g.:
+#   bootstrap_ansible_pubkeys:
+#     - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
+#     - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQ..."
+# Real keys come from globals.yml (HOMELAB_SSH_PUBKEY_FILE); this default only documents the shape.
+bootstrap_ansible_pubkeys: []
+
+bootstrap_sudoers_file: /etc/sudoers.d/ansible
+bootstrap_remove_default_user: true # removes bootstrap_user (cloud-init user) unless root/ansible
+bootstrap_lock_root_password: true # NB: on LXC this also disables `pct console` password login
+
+# --- identity ----------------------------------------------------------------
+bootstrap_domain: ""
+bootstrap_hostname: "{{ inventory_hostname.split('.')[0] }}"
+bootstrap_fqdn: "{{ bootstrap_hostname ~ '.' ~ bootstrap_domain if bootstrap_domain else bootstrap_hostname }}"
+bootstrap_timezone: UTC
+bootstrap_locale: en_US.UTF-8
+
+# --- cloud-init --------------------------------------------------------------
+# false: leaves cloud-init untouched
+# true : create /etc/cloud/cloud-init.disabled (use if Proxmox user-data still rewrites /etc/hosts;
+#        trade-off: PVE-side network/ssh-key changes no longer propagate).
+bootstrap_disable_cloud_init: false
+
+# --- time sync (chrony) ------------------------------------------------------
+# Applies to hosts running chronyd. LXC containers share the host's clock
+# and need no NTP configuration of their own.
+
+# Whether this host serves NTP to clients on the LAN (e.g. VMs or other hosts).
+# false = client-only; true = allow clients in bootstrap_ntp_lan_cidr.
+bootstrap_ntp_serve_lan: false
+
+# Advertise local system time (stratum 10) if upstream sources are unreachable,
+# so LAN clients keep agreeing with each other. Requires bootstrap_ntp_serve_lan: true
+# (validation fails otherwise). Can mask loss of synchronization; monitor
+# 'chronyc tracking'.
+bootstrap_ntp_local_fallback: false
+
+# CIDR allowed to query this host for NTP. Required when bootstrap_ntp_serve_lan
+# is true (validation fails if empty). Example: "192.168.1.0/24".
+bootstrap_ntp_lan_cidr: ""
+
+# Explicit upstream NTP servers. An empty list uses the fallback pool below.
+# Example: ["ntp1.example.net", "ntp2.example.net"] or null
+bootstrap_ntp_servers: [] # empty list uses the fallback pool below
+
+# Public NTP pool hostname used when no explicit servers are configured.
+bootstrap_ntp_fallback_pool: "2.debian.pool.ntp.org"
+
+# Minimum number of selectable sources required before chrony updates the clock.
+# 1 = keep syncing as long as any source works (best availability).
+# 2+ = refuse to sync unless that many sources are selectable; use only with
+# 4+ reliable sources. Must not exceed the number of explicit servers (the
+# fallback pool supplies up to 4); validation fails otherwise.
+bootstrap_ntp_minsources: 1
+
+# --- apt ---------------------------------------------------------------------
+bootstrap_apt_proxy: ""
+bootstrap_apt_https_proxy: "" # opt-in; not every caching proxy handles HTTPS the same way
+bootstrap_apt_mirror_rewrites: [] # list of {regexp, replace}
+bootstrap_apt_retries: 3 # retry attempts for transient network or mirror glitches
+bootstrap_ca_cert_src: "" # controller-side path to PEM
+bootstrap_apt_lock_timeout: 300 # max seconds to wait if apt is locked by background updates
+bootstrap_full_upgrade: true # dist-upgrade during bootstrap; false = install baseline only
+bootstrap_apt_autoremove: true # remove packages no longer needed after the upgrade
+bootstrap_packages:
+  - sudo
+  - curl
+  - ca-certificates
+  - gnupg
+  - vim
+  - git
+  - htop
+  - jq
+  - rsync
+  - unattended-upgrades
+  - needrestart
+  - tzdata
+  - locales
+  - procps
+bootstrap_vm_packages:
+  - qemu-guest-agent
+bootstrap_guest_agent_strict: false # true: fail if the Proxmox "agent" option is not enabled
+
+# --- unattended upgrades -----------------------------------------------------
+bootstrap_unattended_reboot: false
+bootstrap_unattended_reboot_time: "04:00"
+bootstrap_unattended_dry_run: false # diagnostic only; enable with -e on the first run against a custom mirror
+
+# --- ssh ---------------------------------------------------------------------
+bootstrap_ssh_extra_allow_users: []
+bootstrap_ssh_client_alive_interval: 300
+bootstrap_ssh_client_alive_count_max: 2
+
+# --- firewall ----------------------------------------------------------------
+# nftables, default-deny inbound, own table (bootstrap_fw). Applies to VMs; LXC only if enabled below.
+# Sources allowed to reach SSH (tcp/22); also the basis of the lockout check and fail2ban ignoreip.
+# IPv4 and IPv6 entries are both accepted; bare addresses and CIDRs are fine.
+bootstrap_mgmt_cidrs: [] # REQUIRED
+# false: do the firewall in the Proxmox firewall instead (see group_vars/proxmox_all_lxc.yml).
+# true : only for privileged containers where nft works.
+bootstrap_firewall_manage_on_lxc: false
+bootstrap_firewall_lockout_check: true # refuse to enable if the controller is outside mgmt CIDRs
+# Generated by Terraform (host_vars/*/firewall.generated.yml): [{comment, proto, port, from: [...]}]
+# IPv4 sources only; proto is tcp or udp; port is a number or a range like 30000-32767.
+bootstrap_firewall_extra_rules: []
+# Interfaces that bypass ALL inbound filtering, e.g. [cni0, flannel.1] on k3s nodes. Keep it short.
+bootstrap_firewall_trusted_ifaces: []
+
+# --- baseline hardening ------------------------------------------------------
+bootstrap_sysctl_manage_on_lxc: false
+# 1 = strict, 2 = loose. Loose is Debian's own default and is safe for multi-homed guests,
+# subnet routers (Tailscale) and asymmetric paths; strict can drop legitimate traffic there.
+bootstrap_sysctl_rp_filter: 2
+bootstrap_journald_max_use: 500M
+bootstrap_journald_retention: 1month
+bootstrap_fail2ban_enabled: false
+bootstrap_disabled_services:
+  - avahi-daemon
+  - cups
+  - cups-browsed
+  - bluetooth
+  - ModemManager
+  - rpcbind
+
+# --- observability -----------------------------------------------------------
+bootstrap_node_exporter_enabled: false
+bootstrap_node_exporter_port: 9100
+bootstrap_monitoring_cidrs: []
+
+# --- reboot ------------------------------------------------------------------
+bootstrap_reboot_allowed: true
+bootstrap_reboot_timeout: 900

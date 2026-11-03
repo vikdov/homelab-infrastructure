@@ -1,0 +1,60 @@
+---
+# Baseline packages, full upgrade and QEMU guest agent.
+# NEEDRESTART_MODE protects the initial install before the config file drop-in below exists.
+- name: Packages, upgrade, guest agent
+  environment:
+    DEBIAN_FRONTEND: noninteractive # Prevents interactive debconf prompts
+    NEEDRESTART_MODE: a # Automatically restarts modified services without popping up menu prompts
+  block:
+    # On VMs, time.yml may already have refreshed the cache.
+    # On LXC, this is usually the first refresh.
+    # cache_valid_time avoids unnecessary updates in either case.
+    - name: Apt update
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+
+    - name: Install baseline packages
+      ansible.builtin.apt:
+        name: "{{ bootstrap_packages + ([] if bootstrap_is_lxc | bool else bootstrap_vm_packages) }}"
+        state: present
+        lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+
+    - name: Needrestart - restart services automatically, never prompt
+      ansible.builtin.copy:
+        dest: /etc/needrestart/conf.d/50-bootstrap.conf
+        content: "$nrconf{restart} = 'a';\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Full upgrade
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: "{{ bootstrap_apt_autoremove | bool }}"
+        lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+      when: bootstrap_full_upgrade | bool
+
+    - name: Check for the QEMU guest-agent channel
+      ansible.builtin.stat:
+        path: /dev/virtio-ports/org.qemu.guest_agent.0
+      register: bootstrap_ga_channel
+      when: not bootstrap_is_lxc | bool
+
+    - name: Start qemu-guest-agent (unit has no [Install]; udev starts it on boot)
+      ansible.builtin.service:
+        name: qemu-guest-agent
+        state: started
+      when:
+        - not bootstrap_is_lxc | bool
+        - bootstrap_ga_channel.stat.exists
+
+    - name: Warn when the Proxmox "agent" option is off
+      ansible.builtin.debug:
+        msg: >-
+          No virtio guest-agent channel on {{ inventory_hostname }}. Enable the "QEMU Guest Agent"
+          VM option in Proxmox and power-cycle the VM; the package is already installed.
+      when:
+        - not bootstrap_is_lxc | bool
+        - not bootstrap_ga_channel.stat.exists

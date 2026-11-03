@@ -1,0 +1,50 @@
+---
+# Written last, only after every bootstrap step succeeded. lockdown.yml treats an existing marker as
+# "this host was already bootstrapped" and then never deletes a same-named default user, so keep this
+# near the end of the role. Re-runs rewrite it only when bootstrap_version changes.
+
+- name: Ensure facts.d exists
+  ansible.builtin.file:
+    path: "{{ bootstrap_marker_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Look for an existing bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ bootstrap_marker_path }}"
+  register: bootstrap_marker_prev
+
+- name: Read it
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_marker_path }}"
+  register: bootstrap_marker_prev_content
+  when: bootstrap_marker_prev.stat.exists
+
+# A corrupt marker (invalid JSON) parses to '' and is rewritten. An unreadable one fails the run.
+- name: Work out the previously recorded version
+  block:
+    - name: Parse the recorded version
+      ansible.builtin.set_fact:
+        bootstrap_marker_prev_version: >-
+          {{ (bootstrap_marker_prev_content.content | b64decode | from_json).version | default('', true)
+             if bootstrap_marker_prev.stat.exists else '' }}
+  rescue:
+    - name: Treat a corrupt marker as missing
+      ansible.builtin.set_fact:
+        bootstrap_marker_prev_version: ""
+
+- name: Write bootstrap marker
+  ansible.builtin.copy:
+    dest: "{{ bootstrap_marker_path }}"
+    content: "{{ _marker | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    _marker:
+      version: "{{ bootstrap_version }}"
+      date: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+      guest_type: "{{ 'lxc' if bootstrap_is_lxc | bool else 'vm' }}"
+  when: bootstrap_marker_prev_version | default('') | string != bootstrap_version | string

@@ -1,0 +1,123 @@
+---
+# Play 1 decides who we can log in as (idempotent re-runs connect as the managed user;
+# a brand-new host falls back to the cloud-init user / root). Play 2 does the work.
+
+- name: Bootstrap | preflight and connection resolution
+  hosts: "{{ bootstrap_target | default('proxmox_all_running') }}"
+  # Mandatory: brand-new systems may not have Python yet, which fact gathering requires.
+  gather_facts: false
+  # Keep preflight and user resolution even when running the role with --tags.
+  tags: [always]
+  tasks:
+    - name: Preflight | managed-user keys are set
+      ansible.builtin.assert:
+        # default([]) avoids an UndefinedError so the custom fail_msg is shown instead.
+        that: bootstrap_ansible_pubkeys | default([]) | length > 0
+        fail_msg: "Set bootstrap_ansible_pubkeys in inventory/group_vars/all/globals.yml"
+        quiet: true
+
+    - name: Preflight | management CIDRs are set
+      ansible.builtin.assert:
+        that: bootstrap_mgmt_cidrs | default([]) | length > 0
+        fail_msg: "Set bootstrap_mgmt_cidrs in inventory/group_vars/all/globals.yml"
+        quiet: true
+
+    - name: Preflight | every CIDR parses as an IP network
+      ansible.builtin.command:
+        # Builds argv: python, -c, script, then every CIDR as its own argument.
+        argv: >-
+          {{ [ansible_playbook_python, '-c', _script]
+             + (bootstrap_mgmt_cidrs | default([]) | flatten)
+             + (bootstrap_monitoring_cidrs | default([]) | flatten) }}
+      vars:
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+        _script: "import ipaddress, sys; [ipaddress.ip_network(c, strict=False) for c in sys.argv[1:]]"
+      # Remote hosts may not have Python yet during early bootstrap.
+      delegate_to: localhost
+      # Inputs are global variables, so one check covers every host.
+      register: bootstrap_cidr_check
+      changed_when: false
+      # Capture the failure so the next task can report a readable message.
+      failed_when: false
+
+    - name: Preflight | report invalid CIDRs
+      ansible.builtin.assert:
+        that: bootstrap_cidr_check.rc == 0
+        fail_msg: >-
+          Invalid entry in bootstrap_mgmt_cidrs / bootstrap_monitoring_cidrs:
+          {{ (bootstrap_cidr_check.stderr | default('')).splitlines() | last | default('see stderr') }}
+        quiet: true
+
+    - name: Preflight | monitoring CIDRs are set when node_exporter is on
+      ansible.builtin.assert:
+        that: bootstrap_monitoring_cidrs | default([]) | length > 0
+        fail_msg: "bootstrap_node_exporter_enabled needs bootstrap_monitoring_cidrs"
+        quiet: true
+      when: bootstrap_node_exporter_enabled | default(false) | bool
+
+    - name: Preflight | host is a Proxmox guest (not a node)
+      ansible.builtin.assert:
+        # Guardrail: guest bootstrap must never run on a physical PVE hypervisor.
+        that: bootstrap_is_lxc | default(false) | bool or 'proxmox_all_qemu' in group_names
+        fail_msg: >-
+          {{ inventory_hostname }} is in neither proxmox_all_qemu nor proxmox_all_lxc
+          (groups: {{ group_names }}). Is it a Proxmox node? Check ansible-inventory --graph.
+        quiet: true
+
+    # No controller-side port check: guests on SDN vnets are only reachable through the
+    # ProxyJump in ~/.ssh/config, so the real ssh client is the only honest test.
+    - name: Probe login as the managed user
+      ansible.builtin.raw: "true"
+      vars:
+        ansible_user: "{{ bootstrap_ansible_user }}"
+        ansible_become: false
+      register: bootstrap_probe
+      ignore_unreachable: true
+      # Give booting VMs/containers up to 60s (6 x 10s) to come up.
+      retries: 6
+      delay: 10
+      until: bootstrap_probe is not unreachable
+      changed_when: false
+      check_mode: false
+
+    - name: Probe login as the first-boot user (managed user not usable yet)
+      ansible.builtin.raw: "true"
+      vars:
+        ansible_user: "{{ bootstrap_user }}"
+        ansible_become: false
+      register: bootstrap_probe_first
+      ignore_unreachable: true
+      retries: 6
+      delay: 10
+      until: bootstrap_probe_first is not unreachable
+      changed_when: false
+      check_mode: false
+      when: bootstrap_probe is unreachable
+
+    - name: Fail with the real reason when neither user can log in
+      ansible.builtin.fail:
+        msg: >-
+          Cannot SSH to {{ inventory_hostname }} ({{ ansible_host }}) as '{{ bootstrap_ansible_user }}'
+          or '{{ bootstrap_user }}'. First error: {{ bootstrap_probe.msg | default('') }}
+          | Second error: {{ bootstrap_probe_first.msg | default('') }}.
+          Test by hand: ssh {{ bootstrap_user }}@{{ ansible_host }}
+      when:
+        - bootstrap_probe is unreachable
+        - bootstrap_probe_first is unreachable
+
+    - name: Fall back to the first-boot user when the managed user does not exist yet
+      # This is a local memory update; records the active connection user for all subsequent tasks in this run.
+      ansible.builtin.set_fact:
+        ansible_user: "{{ bootstrap_user }}"
+      when: bootstrap_probe is unreachable
+
+    # Close cached SSH connections so later tasks reconnect with the resolved ansible_user.
+    - name: Reset connection to apply the resolved user
+      ansible.builtin.meta: reset_connection
+
+- name: Bootstrap | configure hosts
+  hosts: "{{ bootstrap_target | default('proxmox_all_running') }}"
+  gather_facts: false
+  roles:
+    - role: bootstrap

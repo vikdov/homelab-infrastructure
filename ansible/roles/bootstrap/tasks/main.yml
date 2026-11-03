@@ -1,0 +1,64 @@
+---
+# Order follows the reviewed plan, not the original draft:
+#  connect+cloud-init wait -> apt prep (mirror/proxy/CA) -> time -> packages -> identity ->
+#  unattended-upgrades -> ansible user -> lockdown -> ssh -> firewall -> hardening ->
+#  observability -> reboot -> marker/assert
+- name: Connect and wait for cloud-init
+  ansible.builtin.import_tasks: connect.yml
+  tags: [bootstrap, connect]
+
+- name: Prepare APT mirror, proxy, and CA certificates
+  ansible.builtin.import_tasks: apt_prep.yml
+  tags: [bootstrap, apt]
+
+- name: Configure time zone and synchronization
+  ansible.builtin.import_tasks: time.yml
+  tags: [bootstrap, time]
+
+- name: Install baseline packages
+  ansible.builtin.import_tasks: packages.yml
+  tags: [bootstrap, packages]
+
+- name: Configure host identity and hostname
+  ansible.builtin.import_tasks: identity.yml
+  tags: [bootstrap, identity]
+
+- name: Configure unattended-upgrades
+  ansible.builtin.import_tasks: unattended.yml
+  tags: [bootstrap, unattended]
+
+- name: Set up dedicated Ansible user and keys
+  ansible.builtin.import_tasks: ansible_user.yml
+  tags: [bootstrap, user]
+
+- name: Lock down default users and root
+  ansible.builtin.import_tasks: lockdown.yml
+  tags: [bootstrap, lockdown]
+
+- name: Harden SSH server configuration
+  ansible.builtin.import_tasks: ssh.yml
+  tags: [bootstrap, ssh]
+
+- name: Configure nftables firewall
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [bootstrap, firewall]
+
+- name: Apply system hardening and security controls
+  ansible.builtin.import_tasks: hardening.yml
+  tags: [bootstrap, hardening]
+
+- name: Install monitoring and observability agents
+  ansible.builtin.import_tasks: observability.yml
+  tags: [bootstrap, observability]
+
+- name: Handle pending reboots
+  ansible.builtin.import_tasks: reboot.yml
+  tags: [bootstrap, reboot]
+
+- name: Write bootstrap completion marker fact
+  ansible.builtin.import_tasks: marker.yml
+  tags: [bootstrap, marker]
+
+- name: Run end-state assertions and validation checks
+  ansible.builtin.import_tasks: assert.yml
+  tags: [bootstrap, assert]

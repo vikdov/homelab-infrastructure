@@ -1,0 +1,59 @@
+---
+# Runs before anything that needs Python. Order matters:
+#   raw SSH readiness -> cloud-init wait (VM) -> raw python bootstrap -> wait_for_connection -> setup
+# wait_for_connection and setup need Python, which a fresh LXC template lacks, so the first
+# three steps use `raw`. All tasks run as the user resolved in play 1 of bootstrap.yml
+# (ansible_user), with sudo when that user is not root.
+# Limitation: apt_prep.yml (proxy/mirror/CA) runs later, so the raw apt-get below uses the
+# image's stock sources. It only runs when python3, python3-apt or ca-certificates are missing.
+
+- name: Wait for a working SSH session (raw; python may not exist yet)
+  ansible.builtin.raw: "true"
+  register: bootstrap_raw_ready
+  ignore_unreachable: true
+  retries: 30
+  delay: 5
+  # An ignored UNREACHABLE result is not "failed", so `is succeeded` alone would pass; both tests are needed.
+  until: bootstrap_raw_ready is not unreachable and bootstrap_raw_ready is succeeded
+  changed_when: false
+
+- name: Wait for cloud-init to finish
+  ansible.builtin.raw: |
+    if command -v cloud-init >/dev/null 2>&1; then
+      timeout 900 cloud-init status --wait
+    else
+      echo "cloud-init not installed"
+    fi
+  register: bootstrap_cloud_init_wait
+  # rc 2 = done with recoverable errors; rc 124 = our timeout expired
+  failed_when: bootstrap_cloud_init_wait.rc not in [0, 2]
+  changed_when: false
+  when: not bootstrap_is_lxc | bool
+
+- name: Ensure python3, python3-apt and ca-certificates exist (dpkg lock waited on by apt itself)
+  ansible.builtin.raw: |
+    set -e
+    export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+    need=""
+    [ -x /usr/bin/python3 ] || need="python3"
+    /usr/bin/python3 -c 'import apt' >/dev/null 2>&1 || need="$need python3-apt"
+    [ -e /etc/ssl/certs/ca-certificates.crt ] || need="$need ca-certificates"
+    if [ -z "$need" ]; then echo BOOTSTRAP_NOCHANGE; exit 0; fi
+    apt_opts="-o DPkg::Lock::Timeout={{ bootstrap_apt_lock_timeout }}"
+    apt-get $apt_opts -qq update
+    apt-get $apt_opts -o Dpkg::Use-Pty=0 -qq install -y --no-install-recommends $need
+    echo BOOTSTRAP_CHANGED
+  register: bootstrap_python_raw
+  changed_when: "'BOOTSTRAP_CHANGED' in bootstrap_python_raw.stdout"
+
+# Python exists now; this is the first module-based check (uses the ping module).
+- name: Wait for a python-capable connection
+  ansible.builtin.wait_for_connection:
+    timeout: 120
+  tags: [always]
+
+# The only fact gathering in this play (gather_facts: false), so it must run even with --tags.
+- name: Gather facts
+  ansible.builtin.setup:
+    gather_subset: [min]
+  tags: [always]

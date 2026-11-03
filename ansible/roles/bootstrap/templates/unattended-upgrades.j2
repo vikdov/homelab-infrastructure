@@ -1,0 +1,18 @@
+// Managed by ansible (bootstrap). Security updates only.
+// #clear is an APT directive, not a comment: it drops the stock origin lists before redefining them.
+#clear Unattended-Upgrade::Allowed-Origins;
+#clear Unattended-Upgrade::Origins-Pattern;
+Unattended-Upgrade::Origins-Pattern {
+{% if ansible_facts['distribution'] == 'Ubuntu' %}
+        "origin=Ubuntu,codename=${distro_codename}-security";
+        "origin=UbuntuESM,codename=${distro_codename}-infra-security";
+{% else %}
+        "origin=Debian,codename=${distro_codename},label=Debian-Security";
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+{% endif %}
+};
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "{{ 'true' if bootstrap_unattended_reboot | bool else 'false' }}";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+Unattended-Upgrade::Automatic-Reboot-Time "{{ bootstrap_unattended_reboot_time }}";

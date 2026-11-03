@@ -1,0 +1,32 @@
+---
+bootstrap_default_user: debian
+bootstrap_domain: home.arpa # same as Terraform host_dns_domain and Pi-hole
+bootstrap_timezone: Europe/Warsaw
+bootstrap_locale: en_US.UTF-8
+
+# A missing key file gives an empty list, so the preflight assert fails with a clear
+# message instead of a lookup crash.
+bootstrap_pubkey_file: >-
+  {{ lookup('ansible.builtin.env', 'HOMELAB_SSH_PUBKEY_FILE')
+     | default('~/.ssh/homelab_ed25519.pub', true) | expanduser }}
+bootstrap_ansible_pubkeys: >-
+  {{ [lookup('ansible.builtin.file', bootstrap_pubkey_file, errors='ignore') | default('', true) | trim]
+     | select | list }}
+
+# Paste from: terraform -chdir=terraform/02-workloads output -raw ansible_site_vars
+# (these are the defaults; use your real output, including your workstation address)
+bootstrap_mgmt_cidrs:
+  - 10.10.10.1
+  - 10.10.20.1
+  - 10.10.30.1
+  - 10.10.40.1
+  - 10.10.50.1
+  - 192.168.1.0/24
+bootstrap_monitoring_cidrs:
+  - 10.10.10.10
+
+bootstrap_node_exporter_enabled: true
+bootstrap_ntp_servers: []
+bootstrap_apt_proxy: ""
+bootstrap_apt_mirror_rewrites: []
+bootstrap_ca_cert_src: ""
