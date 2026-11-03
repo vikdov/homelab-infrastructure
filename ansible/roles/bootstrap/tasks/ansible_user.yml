@@ -1,0 +1,59 @@
+---
+# Managed automation account: key-only login (password locked), passwordless sudo.
+# Runs before lockdown.yml, which verifies key login and sudo before removing the default user.
+# Note: a locked password does not block key login while sshd has UsePAM yes (the Debian default);
+# do not set UsePAM no in the sshd drop-in without re-checking this.
+
+# Defaults guarantee these variables exist; this catches empty or malformed values before any change.
+# The role-level key check also covers runs that skip play 1 of bootstrap.yml.
+- name: Validate Ansible user configuration
+  ansible.builtin.assert:
+    that:
+      - bootstrap_ansible_user | length > 0
+      - bootstrap_ansible_pubkeys | length > 0
+      - bootstrap_sudoers_file is match('^/etc/sudoers\.d/[A-Za-z0-9_-]+$')
+      - >-
+        (bootstrap_ansible_pubkeys | map('trim')
+         | select('match', '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+|'
+                           'sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) ')
+         | list | length) == (bootstrap_ansible_pubkeys | length)
+    fail_msg: >-
+      Ansible user configuration is invalid: the user name, key list or sudoers path is empty or
+      malformed, or a key has an unsupported type. Keys: {{ bootstrap_ansible_pubkeys | map('truncate', 40) | list }}
+    quiet: true
+
+- name: Create the ansible user (password locked, key only)
+  ansible.builtin.user:
+    name: "{{ bootstrap_ansible_user }}"
+    comment: Ansible automation
+    shell: /bin/bash
+    create_home: true
+    password_lock: true
+    state: present
+  register: bootstrap_ansible_user_result
+
+- name: Create ~/.ssh
+  ansible.builtin.file:
+    path: "{{ bootstrap_ansible_user_result.home }}/.ssh"
+    state: directory
+    owner: "{{ bootstrap_ansible_user }}"
+    group: "{{ bootstrap_ansible_user_result.group }}"
+    mode: "0700"
+
+# Exclusive on purpose: the file is overwritten, so keys added by hand are removed on the next run.
+- name: Install authorized_keys (exclusive)
+  ansible.builtin.copy:
+    dest: "{{ bootstrap_ansible_user_result.home }}/.ssh/authorized_keys"
+    content: "{{ bootstrap_ansible_pubkeys | map('trim') | join('\n') }}\n"
+    owner: "{{ bootstrap_ansible_user }}"
+    group: "{{ bootstrap_ansible_user_result.group }}"
+    mode: "0600"
+
+- name: Passwordless sudo for the ansible user (validated)
+  ansible.builtin.copy:
+    dest: "{{ bootstrap_sudoers_file }}"
+    content: "{{ bootstrap_ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s

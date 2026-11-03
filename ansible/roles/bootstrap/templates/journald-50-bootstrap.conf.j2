@@ -1,0 +1,6 @@
+# Managed by ansible (bootstrap)
+[Journal]
+Storage=persistent
+SystemMaxUse={{ bootstrap_journald_max_use }}
+MaxRetentionSec={{ bootstrap_journald_retention }}
+Compress=yes

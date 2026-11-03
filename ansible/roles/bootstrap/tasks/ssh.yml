@@ -1,0 +1,89 @@
+---
+# sshd is first-match-wins: the Include must be the first directive in sshd_config, and our drop-in
+# is named 00-* so it sorts before cloud images' 50-cloud-init.conf.
+# Rollback covers config validation only. Login is proven right after the reload, but if that
+# fails nothing is reverted automatically (the managed user's key login was already proven in
+# lockdown.yml, so this is unlikely).
+
+- name: Ensure drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure sshd_config includes the drop-in directory
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^\s*Include\s+/etc/ssh/sshd_config\.d/'
+    line: "Include /etc/ssh/sshd_config.d/*.conf"
+    insertbefore: BOF
+    validate: /usr/sbin/sshd -t -f %s
+
+- name: Harden sshd (validated, rolled back on failure)
+  block:
+    # validate: means a malformed render never lands on disk.
+    - name: Install hardening drop-in
+      ansible.builtin.template:
+        src: sshd-00-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/00-hardening.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reload sshd
+
+    - name: Validate the full effective configuration syntax
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/sshd
+          - -t
+      changed_when: false
+
+    - name: Inspect effective SSH configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/sshd
+          - -T
+          - -C
+          - "user={{ bootstrap_ansible_user }},host=localhost,addr=127.0.0.1"
+      register: bootstrap_sshd_effective
+      changed_when: false
+
+    - name: Assert SSH hardening settings took effect
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in bootstrap_sshd_effective.stdout_lines"
+          - "'passwordauthentication no' in bootstrap_sshd_effective.stdout_lines"
+          - "'kbdinteractiveauthentication no' in bootstrap_sshd_effective.stdout_lines"
+          - "'pubkeyauthentication yes' in bootstrap_sshd_effective.stdout_lines"
+          - "'authenticationmethods publickey' in bootstrap_sshd_effective.stdout_lines"
+          - "'x11forwarding no' in bootstrap_sshd_effective.stdout_lines"
+        fail_msg: "Effective sshd configuration does not match the bootstrap security policy."
+        quiet: true
+
+  # Reached only if the drop-in conflicts with the rest of the config or fails the policy assert
+  # (a malformed render is already rejected by validate:). The file is removed rather than kept,
+  # because a drop-in that failed its checks must not survive a reboot.
+  rescue:
+    - name: Roll back the drop-in so a reboot cannot leave sshd broken
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/00-hardening.conf
+        state: absent
+    - name: Abort
+      ansible.builtin.fail:
+        msg: >-
+          SSH hardening validation failed; the drop-in was removed
+          and sshd was not reloaded.
+
+# The handler restarts ssh when ssh.socket is active and reloads otherwise; existing sessions survive.
+- name: Apply sshd configuration now
+  ansible.builtin.meta: flush_handlers
+
+- name: Re-verify the connection after the sshd change
+  ansible.builtin.meta: reset_connection
+
+- name: Confirm we can still log in
+  ansible.builtin.wait_for_connection:
+    timeout: 60

@@ -1,0 +1,79 @@
+---
+- name: Switch the connection to the managed user
+  ansible.builtin.set_fact:
+    ansible_user: "{{ bootstrap_ansible_user }}"
+
+- name: Re-open the connection as that user
+  ansible.builtin.meta: reset_connection
+
+# If this fails the host is dropped from the run and the default user is left intact.
+- name: Verify key login works
+  ansible.builtin.wait_for_connection:
+    timeout: 60
+
+- name: Verify passwordless sudo works
+  ansible.builtin.command: id -u
+  become: true
+  register: bootstrap_sudo_check
+  changed_when: false
+  failed_when: bootstrap_sudo_check.stdout | trim != '0'
+
+# Safety: the marker is written only at the very end of a successful run. If it exists, this host has
+# already been bootstrapped, so a user that happens to be called like the cloud-init user is a real
+# account and must not be deleted. A run that crashed midway has no marker, so it still finishes the job.
+- name: Has this host completed a bootstrap before?
+  ansible.builtin.stat:
+    path: "{{ bootstrap_marker_path }}"
+  register: bootstrap_marker_seen
+
+- name: Work out whether the default user should go
+  ansible.builtin.set_fact:
+    bootstrap_default_user_candidate: >-
+      {{ bootstrap_remove_default_user | bool
+         and bootstrap_user not in ['root', bootstrap_ansible_user] }}
+    bootstrap_default_user_removable: >-
+      {{ (bootstrap_remove_default_user | bool
+          and bootstrap_user not in ['root', bootstrap_ansible_user])
+         and not bootstrap_marker_seen.stat.exists }}
+
+- name: Look up the default user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ bootstrap_user }}"
+    fail_key: false
+  when: bootstrap_default_user_removable | bool
+
+- name: Remove the default cloud user
+  when:
+    - bootstrap_default_user_removable | bool
+    - ansible_facts['getent_passwd'][bootstrap_user] | default(none) is not none
+  block:
+    - name: Kill its processes (leftover ssh sessions)
+      ansible.builtin.command:
+        argv:
+          - pkill
+          - -KILL
+          - -u
+          - "{{ bootstrap_user }}"
+      register: bootstrap_pkill
+      changed_when: false
+      failed_when: bootstrap_pkill.rc not in [0, 1]
+
+    - name: Delete the user and its home
+      ansible.builtin.user:
+        name: "{{ bootstrap_user }}"
+        state: absent
+        remove: true
+        force: true
+
+- name: Remove leftover cloud-init sudoers file
+  ansible.builtin.file:
+    path: /etc/sudoers.d/90-cloud-init-users
+    state: absent
+  when: bootstrap_default_user_removable | bool
+
+- name: Lock root's password
+  ansible.builtin.user:
+    name: root
+    password_lock: true
+  when: bootstrap_lock_root_password | bool

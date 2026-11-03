@@ -1,0 +1,124 @@
+---
+# Host firewall: nftables, default-deny inbound, own table (bootstrap_fw) so other tables
+# (fail2ban, docker, ...) are untouched. Input chain only; the role runs on guests, not on PVE nodes.
+# LXC: do this in the Proxmox firewall unless bootstrap_firewall_manage_on_lxc is set.
+# Terraform-generated service rules are IPv4-only on purpose (enforced by the first assert).
+
+- name: Host firewall (nftables, default-deny inbound)
+  when: not bootstrap_is_lxc | bool or bootstrap_firewall_manage_on_lxc | bool
+  block:
+    - name: Generated service rules are well-formed (IPv4 sources, tcp/udp, port or range)
+      ansible.builtin.assert:
+        that:
+          - item.proto in ['tcp', 'udp']
+          - item.port | string is match('^[0-9]+(-[0-9]+)?$')
+          - item.from | flatten | length > 0
+          - (item.from | flatten | select('match', '^[0-9.]+(/[0-9]+)?$') | list | length)
+            == (item.from | flatten | length)
+        quiet: true
+      loop: "{{ bootstrap_firewall_extra_rules }}"
+      loop_control:
+        label: "{{ item.comment | default(item.port) }}"
+
+    - name: Find the address sshd sees us connecting from
+      ansible.builtin.shell: 'echo "${SSH_CLIENT%% *}"'
+      vars:
+        ansible_become: false # sudo's env_reset would drop SSH_CLIENT
+      register: bootstrap_ssh_client
+      changed_when: false
+      when: bootstrap_firewall_lockout_check | bool
+
+    - name: Check that address is inside the management CIDRs
+      ansible.builtin.command:
+        argv: "{{ ['python3', '-c', _script, bootstrap_ssh_client.stdout | trim] + (bootstrap_mgmt_cidrs | flatten) }}"
+      vars:
+        _script: >-
+          import ipaddress, sys;
+          ip = ipaddress.ip_address(sys.argv[1]);
+          sys.exit(0 if any(ip in ipaddress.ip_network(c, strict=False) for c in sys.argv[2:]) else 3)
+      register: bootstrap_mgmt_check
+      changed_when: false
+      failed_when: false
+      when: bootstrap_firewall_lockout_check | bool
+
+    - name: Refuse to lock ourselves out
+      ansible.builtin.assert:
+        that: bootstrap_mgmt_check.rc == 0
+        fail_msg: >-
+          The controller connects from {{ bootstrap_ssh_client.stdout | default('?') | trim }}, which is not in
+          bootstrap_mgmt_cidrs {{ bootstrap_mgmt_cidrs | flatten }}. Enabling default-deny would cut this session.
+        quiet: true
+      when: bootstrap_firewall_lockout_check | bool
+
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+
+    - name: Ruleset (SSH allow rule is part of the same atomic load as the drop policy)
+      ansible.builtin.template:
+        src: nftables.conf.j2
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
+      register: bootstrap_nft_rendered
+      notify: Reload nftables
+
+    # Dead-man's switch. Established connections survive any ruleset, so only a NEW login proves
+    # the rules are right. If that login fails, in 5 minutes the table AND the file are removed
+    # (file removal makes the next run re-render, re-arm and re-apply instead of silently skipping).
+    # The timer is transient: it does not survive a reboot inside the 5-minute window.
+    - name: Clear a stale rollback timer
+      ansible.builtin.systemd_service:
+        name: bootstrap-fw-rollback.timer
+        state: stopped
+      failed_when: false
+      when: bootstrap_nft_rendered is changed # noqa: no-handler
+
+    # A previous rollback service that ran and failed stays loaded and blocks the next systemd-run.
+    - name: Reset a failed rollback unit
+      ansible.builtin.command: systemctl reset-failed bootstrap-fw-rollback.service
+      changed_when: false
+      failed_when: false
+      when: bootstrap_nft_rendered is changed # noqa: no-handler
+
+    - name: Arm the rollback timer
+      ansible.builtin.command:
+        argv:
+          - systemd-run
+          - --unit=bootstrap-fw-rollback
+          - --on-active=300
+          - /bin/sh
+          - -c
+          - /usr/sbin/nft delete table inet bootstrap_fw; rm -f /etc/nftables.conf
+      changed_when: true
+      when: bootstrap_nft_rendered is changed # noqa: no-handler
+
+    - name: Enable nftables
+      ansible.builtin.systemd_service:
+        name: nftables
+        enabled: true
+        state: started
+
+    - name: Apply ruleset changes
+      ansible.builtin.meta: flush_handlers
+
+# meta ignores `when:`, so it lives between the two blocks. On LXC it is just a harmless reconnect.
+- name: Drop the multiplexed connection so the next login is brand new
+  ansible.builtin.meta: reset_connection
+
+- name: Verify the firewall did not cut us off, then disarm the rollback
+  when: not bootstrap_is_lxc | bool or bootstrap_firewall_manage_on_lxc | bool
+  block:
+    - name: Confirm a NEW session works
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+
+    - name: Cancel the rollback timer
+      ansible.builtin.systemd_service:
+        name: bootstrap-fw-rollback.timer
+        state: stopped
+      when: bootstrap_nft_rendered is changed # noqa: no-handler

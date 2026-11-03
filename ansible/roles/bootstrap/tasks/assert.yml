@@ -1,0 +1,312 @@
+---
+# Verifies the end state. Each check is a separate task so a failure names the broken requirement.
+# This file is intended to work with --tags assert and does not rely on facts set by lockdown.yml.
+
+- name: Work out whether a default user should be absent
+  ansible.builtin.set_fact:
+    bootstrap_default_user_candidate: >-
+      {{ bootstrap_remove_default_user | bool
+         and bootstrap_user not in ['root', bootstrap_ansible_user] }}
+
+- name: Sudo works without a password
+  ansible.builtin.command: sudo -n true
+  vars:
+    ansible_become: false
+  changed_when: false
+
+- name: Default user is gone
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ bootstrap_user }}"
+    fail_key: false
+  when: bootstrap_default_user_candidate | bool
+
+- name: Assert default user does not exist
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['getent_passwd'][bootstrap_user] | default(none) is none
+    fail_msg: "Default user {{ bootstrap_user }} still exists"
+    quiet: true
+  when: bootstrap_default_user_candidate | bool
+
+- name: Root password status
+  ansible.builtin.command: passwd -S root
+  become: true
+  register: bootstrap_root_status
+  changed_when: false
+  when: bootstrap_lock_root_password | bool
+
+- name: Assert root password is locked
+  ansible.builtin.assert:
+    that:
+      - bootstrap_root_status.stdout.split()[1] == 'L'
+    fail_msg: "root password is not locked: {{ bootstrap_root_status.stdout }}"
+    quiet: true
+  when: bootstrap_lock_root_password | bool
+
+- name: Effective sshd configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sshd
+      - -T
+      - -C
+      - "user={{ bootstrap_ansible_user }},host=localhost,addr=127.0.0.1"
+  become: true
+  register: bootstrap_sshd_t
+  changed_when: false
+
+- name: Assert sshd is key-only and root login is disabled
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication no' in bootstrap_sshd_t.stdout_lines"
+      - "'permitrootlogin no' in bootstrap_sshd_t.stdout_lines"
+      - "'pubkeyauthentication yes' in bootstrap_sshd_t.stdout_lines"
+      - "'authenticationmethods publickey' in bootstrap_sshd_t.stdout_lines"
+    fail_msg: "sshd is not key-only / root-login-disabled"
+    quiet: true
+
+- name: Unattended upgrades configured
+  ansible.builtin.command: apt-config dump
+  changed_when: false
+  register: bootstrap_apt_dump
+
+- name: Assert unattended-upgrades is enabled and security-only
+  vars:
+    _origins: >-
+      {{ bootstrap_apt_dump.stdout_lines
+         | select('match', '^Unattended-Upgrade::(Origins-Pattern|Allowed-Origins)::')
+         | list }}
+    _reboot: "{{ 'true' if bootstrap_unattended_reboot | bool else 'false' }}"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_apt_dump.stdout is search('APT::Periodic::Unattended-Upgrade "1"')
+      - _origins | length > 0
+      - (_origins | select('search', '(?i)security') | list | length) == (_origins | length)
+      - bootstrap_apt_dump.stdout is search('Unattended-Upgrade::Automatic-Reboot "' ~ _reboot ~ '"')
+    fail_msg: >-
+      unattended-upgrades is disabled, has non-security origins, or the reboot setting differs
+      from bootstrap_unattended_reboot. Effective origins: {{ _origins }}
+    quiet: true
+
+- name: Hostname
+  ansible.builtin.command: hostname
+  changed_when: false
+  register: bootstrap_hostname_now
+
+- name: Assert hostname matches expected value
+  ansible.builtin.assert:
+    that:
+      - bootstrap_hostname_now.stdout | trim == bootstrap_hostname
+    fail_msg: "hostname is {{ bootstrap_hostname_now.stdout }}, expected {{ bootstrap_hostname }}"
+    quiet: true
+
+- name: FQDN (VM only)
+  ansible.builtin.command: hostname -f
+  changed_when: false
+  register: bootstrap_fqdn_now
+  when: not bootstrap_is_lxc | bool
+
+- name: Assert FQDN matches expected value
+  ansible.builtin.assert:
+    that:
+      - bootstrap_fqdn_now.stdout | trim == bootstrap_fqdn
+    fail_msg: "FQDN is {{ bootstrap_fqdn_now.stdout }}, expected {{ bootstrap_fqdn }}"
+    quiet: true
+  when: not bootstrap_is_lxc | bool
+
+- name: Timezone and locale
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - /etc/timezone
+    - /etc/default/locale
+  register: bootstrap_tzloc
+
+- name: Assert timezone and locale are correct
+  ansible.builtin.assert:
+    that:
+      - (bootstrap_tzloc.results[0].content | b64decode | trim) == bootstrap_timezone
+      - >-
+        (bootstrap_tzloc.results[1].content | b64decode)
+        is search('(?m)^LANG=' ~ (bootstrap_locale | regex_escape) ~ '$')
+    fail_msg: "timezone/locale mismatch"
+    quiet: true
+
+- name: Time sync healthy (VM only)
+  ansible.builtin.command:
+    argv:
+      - chronyc
+      - waitsync
+      - "10"
+      - "0.5"
+      - "0"
+      - "3"
+  changed_when: false
+  when: not bootstrap_is_lxc | bool
+
+- name: Firewall active and default-deny
+  when: not bootstrap_is_lxc | bool or bootstrap_firewall_manage_on_lxc | bool
+  block:
+    - name: List nftables input chain rules
+      ansible.builtin.command: nft list chain inet bootstrap_fw input
+      become: true
+      register: bootstrap_nft
+      changed_when: false
+
+    - name: Check if nftables service is enabled
+      ansible.builtin.command: systemctl is-enabled nftables # noqa: command-instead-of-module
+      register: bootstrap_nft_enabled
+      changed_when: false
+
+    - name: Assert nftables default-deny is active and persistent
+      ansible.builtin.assert:
+        that:
+          - "'policy drop' in bootstrap_nft.stdout"
+          - bootstrap_nft_enabled.stdout | trim == 'enabled'
+        fail_msg: "nftables default-deny is not active/persistent"
+        quiet: true
+
+# Own stat, so this section does not depend on packages.yml having run in the same invocation.
+- name: Guest agent (VM only)
+  when: not bootstrap_is_lxc | bool
+  block:
+    - name: Check for the QEMU guest-agent channel
+      ansible.builtin.stat:
+        path: /dev/virtio-ports/org.qemu.guest_agent.0
+      register: bootstrap_ga_channel
+
+    - name: Guest agent running
+      ansible.builtin.command: systemctl is-active qemu-guest-agent # noqa: command-instead-of-module
+      changed_when: false
+      when: bootstrap_ga_channel.stat.exists
+
+    - name: Assert guest agent channel exists
+      ansible.builtin.assert:
+        that:
+          - bootstrap_ga_channel.stat.exists
+        fail_msg: "qemu-guest-agent channel missing: enable the Proxmox 'agent' option and power-cycle the VM"
+        quiet: true
+      when: bootstrap_guest_agent_strict | bool
+
+- name: Monitoring agent answers locally
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ bootstrap_node_exporter_port }}/metrics"
+    return_content: false
+    status_code: 200
+  register: bootstrap_ne
+  retries: 5
+  delay: 3
+  until: bootstrap_ne.status == 200
+  when: bootstrap_node_exporter_enabled | bool
+
+- name: Cloud-init finished or disabled
+  when: not bootstrap_is_lxc | bool
+  block:
+    - name: Is cloud-init installed
+      ansible.builtin.stat:
+        path: /usr/bin/cloud-init
+      register: bootstrap_ci_bin
+
+    - name: Check cloud-init status
+      ansible.builtin.command: cloud-init status
+      register: bootstrap_ci_status
+      changed_when: false
+      failed_when: false
+      when: bootstrap_ci_bin.stat.exists
+
+    - name: Assert cloud-init is done or disabled
+      ansible.builtin.assert:
+        that:
+          - bootstrap_ci_status.rc in [0, 2]
+          - "bootstrap_ci_status.stdout is search('(?m)^status: (done|disabled)$')"
+        fail_msg: "cloud-init not finished: {{ bootstrap_ci_status.stdout | default('') }}"
+        quiet: true
+      when: bootstrap_ci_bin.stat.exists
+
+- name: No pending reboot
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: bootstrap_reboot_after
+
+- name: Assert no reboot is pending
+  ansible.builtin.assert:
+    that:
+      - not bootstrap_reboot_after.stat.exists
+    fail_msg: "A reboot is still pending (bootstrap_reboot_allowed={{ bootstrap_reboot_allowed }})"
+    quiet: true
+  when:
+    - bootstrap_reboot_allowed | bool
+    - not bootstrap_is_lxc | bool
+
+- name: Running kernel status (VM only)
+  ansible.builtin.command: needrestart -b -k
+  become: true
+  register: bootstrap_needrestart_after
+  changed_when: false
+  failed_when: false
+  when:
+    - not bootstrap_is_lxc | bool
+    - bootstrap_reboot_allowed | bool
+
+- name: Warn if running kernel status could not be determined
+  ansible.builtin.debug:
+    msg: >-
+      needrestart could not provide a usable kernel status
+      (rc={{ bootstrap_needrestart_after.rc | default('?') }}).
+      Check manually whether a reboot is needed.
+  when:
+    - not bootstrap_is_lxc | bool
+    - bootstrap_reboot_allowed | bool
+    - >-
+      (bootstrap_needrestart_after.stdout | default('')
+       | regex_findall('(?m)^NEEDRESTART-KSTA:\s*([0-9]+)\s*$')
+       | first | default('0')) not in ['1', '2', '3']
+
+- name: Assert running kernel is current
+  ansible.builtin.assert:
+    that:
+      - >-
+        (bootstrap_needrestart_after.stdout | default('')
+         | regex_findall('(?m)^NEEDRESTART-KSTA:\s*([0-9]+)\s*$')
+         | first | default('0')) not in ['2', '3']
+    fail_msg: >-
+      A newer kernel is installed than the one running. If the bootloader intentionally boots an older
+      kernel, set bootstrap_reboot_allowed: false for this host.
+    quiet: true
+  when:
+    - not bootstrap_is_lxc | bool
+    - bootstrap_reboot_allowed | bool
+
+- name: Marker present
+  ansible.builtin.stat:
+    path: "{{ bootstrap_marker_path }}"
+  register: bootstrap_marker_stat
+
+- name: Assert marker file exists
+  ansible.builtin.assert:
+    that:
+      - bootstrap_marker_stat.stat.exists
+      - bootstrap_marker_stat.stat.isreg | default(false)
+    fail_msg: "Bootstrap marker {{ bootstrap_marker_path }} is missing or is not a regular file"
+    quiet: true
+
+- name: Read bootstrap marker
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_marker_path }}"
+  register: bootstrap_marker_content
+
+- name: Assert bootstrap marker is valid
+  vars:
+    _marker: "{{ bootstrap_marker_content.content | b64decode | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - _marker.version | string == bootstrap_version | string
+      - _marker.guest_type == ('lxc' if bootstrap_is_lxc | bool else 'vm')
+    fail_msg: "Bootstrap marker is invalid or does not match this host's expected version and guest type"
+    quiet: true
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: bootstrap {{ bootstrap_version }} OK
+      ({{ 'lxc' if bootstrap_is_lxc | bool else 'vm' }})

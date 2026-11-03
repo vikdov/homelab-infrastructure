@@ -1,0 +1,12 @@
+# Managed by ansible (bootstrap)
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 {{ bootstrap_mgmt_cidrs | flatten | join(' ') }}
+bantime = 1h
+findtime = 10m
+maxretry = 5
+backend = systemd
+banaction = nftables
+banaction_allports = nftables[type=allports]
+
+[sshd]
+enabled = true

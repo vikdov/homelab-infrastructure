@@ -1,9 +1,10 @@
 ---
 profile: production
 exclude_paths:
-  - .cache/
-  - .collections/
-  - .git/
+  - ".cache/"
+  - ".collections/"
+  - ".git/"
+  - "**/host_vars/*/firewall.generated.yml"
 # Temporarily disable some rules during development:
 skip_list:
   - meta-incorrect

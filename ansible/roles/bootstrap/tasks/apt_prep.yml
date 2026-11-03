@@ -1,0 +1,97 @@
+---
+# Applies the internal CA, apt proxy and mirror rewrites before the first module-based apt run.
+# connect.yml may already have run a raw apt-get against the image's stock sources (only when
+# python3, python3-apt or ca-certificates were missing), so this is not strictly the first apt use.
+# The apt cache is refreshed here when the sources change; otherwise cache_valid_time in later
+# tasks could skip fetching the mirror's package lists.
+
+- name: Install internal CA certificate
+  ansible.builtin.copy:
+    src: "{{ bootstrap_ca_cert_src }}"
+    dest: /usr/local/share/ca-certificates/bootstrap-internal-ca.crt
+    owner: root
+    group: root
+    mode: "0644"
+  when: bootstrap_ca_cert_src | length > 0
+  notify: Update CA certificates
+
+- name: Configure apt proxy
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/01bootstrap-proxy
+    content: |
+      {% if bootstrap_apt_proxy | length > 0 %}
+      Acquire::http::Proxy "{{ bootstrap_apt_proxy }}";
+      {% endif %}
+      {% if bootstrap_apt_https_proxy | length > 0 %}
+      Acquire::https::Proxy "{{ bootstrap_apt_https_proxy }}";
+      {% endif %}
+    owner: root
+    group: root
+    mode: "0644"
+  when: bootstrap_apt_proxy | length > 0 or bootstrap_apt_https_proxy | length > 0
+
+- name: Configure apt download retries
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/02bootstrap-retries
+    content: |
+      Acquire::Retries "{{ bootstrap_apt_retries }}";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Remove apt proxy configuration when no proxy is set
+  ansible.builtin.file:
+    path: /etc/apt/apt.conf.d/01bootstrap-proxy
+    state: absent
+  when: bootstrap_apt_proxy | length == 0 and bootstrap_apt_https_proxy | length == 0
+
+# An empty list simply produces no iterations, so no `when` is needed.
+- name: Validate APT mirror rewrite definitions
+  ansible.builtin.assert:
+    that:
+      - item.regexp is defined
+      - item.replace is defined
+      - item.regexp | default('') | length > 0
+    fail_msg: "Invalid APT mirror rewrite definition: {{ item }}"
+    quiet: true
+  loop: "{{ bootstrap_apt_mirror_rewrites }}"
+  loop_control:
+    label: "{{ item.regexp | default('?') }}"
+
+- name: Rewrite apt sources to the internal mirror
+  when: bootstrap_apt_mirror_rewrites | length > 0
+  block:
+    - name: Find apt source files
+      ansible.builtin.find:
+        paths: /etc/apt
+        patterns: ["sources.list", "*.list", "*.sources"]
+        recurse: true
+      register: bootstrap_apt_sources
+
+    # Rewrites must be idempotent: the regexp must not match its own replacement.
+    - name: Point apt sources at the internal mirror
+      ansible.builtin.replace:
+        path: "{{ item.0 }}"
+        regexp: "{{ item.1.regexp }}"
+        replace: "{{ item.1.replace }}"
+      loop: >-
+        {{ bootstrap_apt_sources.files
+           | map(attribute='path')
+           | list
+           | product(bootstrap_apt_mirror_rewrites)
+           | list }}
+      loop_control:
+        label: "{{ item.0 }}"
+      register: bootstrap_apt_sources_rewritten
+
+# The CA must be trusted before any apt run that talks to an HTTPS mirror.
+- name: Apply CA trust now
+  ansible.builtin.meta: flush_handlers
+
+- name: Refresh apt lists after the sources changed
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+  when:
+    - bootstrap_apt_mirror_rewrites | length > 0
+    - bootstrap_apt_sources_rewritten is changed # noqa: no-handler

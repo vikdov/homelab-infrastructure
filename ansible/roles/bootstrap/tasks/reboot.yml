@@ -1,0 +1,54 @@
+---
+# Reboots a VM once at the end of bootstrap if a package or kernel update requires it.
+# /var/run/reboot-required catches package-requested reboots; needrestart catches pending kernel
+# updates (Debian does not create the flag for kernels). LXC is never rebooted here: its kernel
+# is the host's and the restart is left to Proxmox.
+
+- name: Check reboot-required flag
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: bootstrap_reboot_flag
+
+# KSTA: 0 = unknown/failed, 1 = current, 2/3 = newer kernel installed. Read-only, so it runs in --check too.
+- name: Check for an obsolete running kernel (VM only)
+  ansible.builtin.command: needrestart -b -k
+  become: true
+  register: bootstrap_needrestart
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: not bootstrap_is_lxc | bool
+
+- name: Work out the kernel status
+  ansible.builtin.set_fact:
+    bootstrap_kernel_status: >-
+      {{ 'n/a' if bootstrap_is_lxc | bool else
+         (bootstrap_needrestart.stdout | default('')
+          | regex_findall('(?m)^NEEDRESTART-KSTA:\s*([0-9]+)\s*$') | first | default('0')) }}
+
+- name: Warn when the kernel status could not be determined
+  ansible.builtin.debug:
+    msg: >-
+      needrestart gave no usable kernel status on {{ inventory_hostname }}
+      (rc={{ bootstrap_needrestart.rc | default('?') }}). Check manually whether a reboot is needed.
+  when: bootstrap_kernel_status == '0'
+
+- name: Decide whether a reboot is needed
+  ansible.builtin.set_fact:
+    bootstrap_reboot_needed: "{{ bootstrap_reboot_flag.stat.exists or bootstrap_kernel_status in ['2', '3'] }}"
+
+- name: Warn that a reboot is pending but will not be done automatically
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} needs a reboot; reboot it manually (LXC or bootstrap_reboot_allowed is false)."
+  when:
+    - bootstrap_reboot_needed | bool
+    - bootstrap_is_lxc | bool or not bootstrap_reboot_allowed | bool
+
+- name: Reboot VM
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ bootstrap_reboot_timeout }}"
+    msg: "Reboot by ansible bootstrap"
+  when:
+    - not bootstrap_is_lxc | bool
+    - bootstrap_reboot_needed | bool
+    - bootstrap_reboot_allowed | bool

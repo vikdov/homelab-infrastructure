@@ -1,0 +1,27 @@
+---
+# Connection logic. Rarely edited.
+
+# Single source of truth for the managed user, created on target hosts (also defaulted in the role).
+bootstrap_ansible_user: ansible
+
+# Guest type comes from the Proxmox dynamic inventory group.
+bootstrap_is_lxc: "{{ 'proxmox_all_lxc' in group_names }}"
+
+# User for the FIRST connection (before the ansible user exists).
+#   VM : cloud-init user from Proxmox "ciuser", falling back to bootstrap_default_user, then 'debian'
+#   LXC: root
+bootstrap_user: >-
+  {{ 'root' if bootstrap_is_lxc | bool
+     else (proxmox_ciuser | default(bootstrap_default_user | default('debian'))) }}
+
+# Steady state: connect as the managed user. play 1 of bootstrap.yml falls back to
+# bootstrap_user when the managed user does not exist yet.
+ansible_user: "{{ bootstrap_ansible_user }}"
+ansible_ssh_private_key_file: >-
+  {{ lookup('ansible.builtin.env', 'BOOTSTRAP_SSH_KEY')
+     | default('~/.ssh/homelab_ed25519', true) }}
+ansible_python_interpreter: /usr/bin/python3
+
+# Debian LXC templates ship without sudo, so only escalate when not already root.
+ansible_become: "{{ ansible_user != 'root' }}"
+ansible_become_method: sudo

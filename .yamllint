@@ -5,6 +5,7 @@ ignore: |
   .terraform/
   .venv/
   .cache/
+  **/host_vars/*/firewall.generated.yml
 
 rules:
   line-length:

@@ -1,0 +1,64 @@
+---
+# Node exporter (optional) and its firewall warning for containers.
+# Extension point: add a log shipper or other agent below, gated on its own variable.
+- name: Validate node exporter port
+  ansible.builtin.assert:
+    that:
+      - bootstrap_node_exporter_port | string is match('^[0-9]+$')
+      - bootstrap_node_exporter_port | int >= 1
+      - bootstrap_node_exporter_port | int <= 65535
+    fail_msg: >-
+      bootstrap_node_exporter_port must be a number between 1 and 65535,
+      got '{{ bootstrap_node_exporter_port }}'
+    quiet: true
+  when: bootstrap_node_exporter_enabled | bool
+
+- name: Warn about unrestricted metrics port on containers
+  ansible.builtin.debug:
+    msg: >-
+      node_exporter listens on :{{ bootstrap_node_exporter_port }} on all interfaces and this role does not manage
+      the firewall on LXC. Restrict it to {{ bootstrap_monitoring_cidrs | flatten }} in the Proxmox firewall.
+  when:
+    - bootstrap_node_exporter_enabled | bool
+    - bootstrap_is_lxc | bool
+    - not bootstrap_firewall_manage_on_lxc | bool
+
+- name: Node_exporter
+  when: bootstrap_node_exporter_enabled | bool
+  block:
+    - name: Install node exporter
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        state: present
+        lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+
+    - name: Textfile directory
+      ansible.builtin.file:
+        path: /var/lib/prometheus/node-exporter
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # One task owns ARGS. Two tasks matching the same line would rewrite it back and forth on every run.
+    - name: Set listen port and collectors
+      ansible.builtin.lineinfile:
+        path: /etc/default/prometheus-node-exporter
+        regexp: "^ARGS="
+        line: 'ARGS="{{ _ne_args | join(" ") }}"'
+      vars:
+        _ne_args:
+          - "--web.listen-address=:{{ bootstrap_node_exporter_port }}"
+          - "--collector.systemd"
+          - "--collector.textfile.directory=/var/lib/prometheus/node-exporter"
+      notify: Restart node exporter
+
+    - name: Enable node exporter
+      ansible.builtin.service:
+        name: prometheus-node-exporter
+        state: started
+        enabled: true
+
+    # The package auto-starts with stock args, so apply the new ones before assert.yml checks the port.
+    - name: Apply restart
+      ansible.builtin.meta: flush_handlers

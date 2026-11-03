@@ -1,0 +1,93 @@
+---
+# Baseline hardening: sysctl (VM), persistent journald, optional fail2ban, unused services off.
+# Handlers are flushed at the end of this file.
+
+- name: Validate sysctl configuration
+  ansible.builtin.assert:
+    that:
+      - bootstrap_sysctl_rp_filter | string is match('^[012]$')
+    quiet: true
+
+- name: Kernel sysctl baseline (VM; containers inherit the host's)
+  ansible.builtin.template:
+    src: sysctl-99-bootstrap.conf.j2
+    dest: /etc/sysctl.d/99-bootstrap.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: not bootstrap_is_lxc | bool or bootstrap_sysctl_manage_on_lxc | bool
+  notify: Apply sysctl
+
+# Storage=persistent makes journald create /var/log/journal itself with the right owner and mode.
+- name: Journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Journald drop-in
+  ansible.builtin.template:
+    src: journald-50-bootstrap.conf.j2
+    dest: /etc/systemd/journald.conf.d/50-bootstrap.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Fail2ban (optional)
+  when: bootstrap_fail2ban_enabled | bool
+  block:
+    - name: Install fail2ban
+      ansible.builtin.apt:
+        name: fail2ban
+        state: present
+        lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+    - name: Configure sshd jail
+      ansible.builtin.template:
+        src: fail2ban-jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart fail2ban
+    # Tests the config files on disk, so a bad jail fails the run before the handler restarts fail2ban.
+    - name: Validate fail2ban configuration
+      ansible.builtin.command:
+        argv:
+          - fail2ban-client
+          - -t
+      changed_when: false
+      check_mode: false
+    - name: Enable fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        state: started
+        enabled: true
+
+- name: Inspect services
+  ansible.builtin.service_facts:
+
+# Masked rather than just disabled so socket activation cannot start them again.
+- name: Disable and mask unused services that are present
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    masked: true
+    state: stopped
+  loop: >-
+    {{ bootstrap_disabled_services
+       | intersect(ansible_facts.services.keys() | map('regex_replace', '\.service$', '') | list) }}
+
+# service_facts lists only .service units, so socket units are attempted blindly;
+# hosts without a matching socket (bluetooth, ModemManager, ...) are not an error.
+- name: Mask socket units of disabled services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}.socket"
+    masked: true
+    state: stopped
+  loop: "{{ bootstrap_disabled_services }}"
+  failed_when: false
+
+- name: Apply hardening handlers
+  ansible.builtin.meta: flush_handlers

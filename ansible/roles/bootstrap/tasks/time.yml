@@ -1,0 +1,114 @@
+---
+# VM only. LXC guests cannot set the clock; they inherit the host's.
+- name: Time synchronisation
+  when: not (bootstrap_is_lxc | default(false) | bool)
+  environment:
+    DEBIAN_FRONTEND: noninteractive # Prevents interactive debconf prompts
+  block:
+    - name: Validate Chrony configuration
+      ansible.builtin.assert:
+        that:
+          - bootstrap_ntp_servers | default([], true) is sequence
+          - bootstrap_ntp_servers | default([], true) is not string
+          - >-
+            (bootstrap_ntp_servers | default([], true) | length > 0)
+            or
+            (bootstrap_ntp_fallback_pool | default('', true) | string | trim | length > 0)
+          - bootstrap_ntp_minsources | int >= 1
+          - >-
+            bootstrap_ntp_minsources | int
+            <= ((bootstrap_ntp_servers | default([], true) | length) or 4)
+          - >-
+            not (bootstrap_ntp_local_fallback | default(false, true) | bool)
+            or
+            (bootstrap_ntp_serve_lan | default(false, true) | bool)
+          - >-
+            not (bootstrap_ntp_serve_lan | default(false, true) | bool)
+            or
+            (bootstrap_ntp_lan_cidr | default('', true) | string | trim | length > 0)
+        fail_msg: >-
+          Invalid Chrony configuration; check sources, minsources,
+          LAN serving, and LAN fallback settings.
+
+    - name: Temporarily tolerate a skewed clock for the first apt update
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/99bootstrap-tmp-nocheckdate
+        content: "Acquire::Check-Date \"false\";\n"
+        mode: "0644"
+      changed_when: false
+
+    - name: Install chrony
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: "{{ bootstrap_apt_lock_timeout }}"
+
+    - name: Disable distro default NTP sources
+      ansible.builtin.replace:
+        path: /etc/chrony/chrony.conf
+        regexp: '^((?:pool|server)\s.*)$'
+        replace: '# \1  # disabled by bootstrap'
+      notify: Restart chrony
+
+    - name: Chrony bootstrap config
+      ansible.builtin.template:
+        src: chrony-bootstrap.conf.j2
+        dest: /etc/chrony/conf.d/10-bootstrap.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart chrony
+
+    - name: Validate Chrony configuration syntax
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/chronyd
+          - -p
+      register: bootstrap_chrony_effective_config
+      changed_when: false
+      failed_when: >-
+        bootstrap_chrony_effective_config.rc != 0
+        or 'logchange 0.5' not in bootstrap_chrony_effective_config.stdout
+
+    - name: Enable chrony
+      ansible.builtin.service:
+        name: chrony
+        state: started
+        enabled: true
+
+    - name: Apply any pending restart before stepping the clock
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for chrony to synchronise
+      ansible.builtin.command: chronyc waitsync 12 0.5
+      register: bootstrap_chrony_waitsync
+      changed_when: false
+      failed_when: false
+
+    - name: Step the clock if synchronisation has not completed
+      ansible.builtin.command: chronyc makestep
+      when: bootstrap_chrony_waitsync.rc != 0
+      changed_when: false
+      failed_when: false
+
+    - name: Re-check chrony synchronisation after step
+      ansible.builtin.command: chronyc waitsync 6 0.5
+      register: bootstrap_chrony_waitsync
+      changed_when: false
+      failed_when: false
+
+    - name: Report unsuccessful chrony synchronisation
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: chrony did not confirm synchronisation during bootstrap.
+          Check 'chronyc tracking' and 'chronyc sources -v'.
+      when: bootstrap_chrony_waitsync.rc != 0
+
+  always:
+    - name: Remove temporary apt date-check override
+      ansible.builtin.file:
+        path: /etc/apt/apt.conf.d/99bootstrap-tmp-nocheckdate
+        state: absent
+      changed_when: false

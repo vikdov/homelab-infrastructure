@@ -27,3 +27,4 @@ terraform.rc
 **/.collections/
 **/.roles/
 *.retry
+**/vault.yml

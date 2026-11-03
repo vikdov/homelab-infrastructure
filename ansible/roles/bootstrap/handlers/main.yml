@@ -1,0 +1,48 @@
+---
+- name: Update CA certificates
+  ansible.builtin.command: update-ca-certificates
+  changed_when: true
+
+- name: Restart chrony
+  ansible.builtin.service:
+    name: chrony
+    state: restarted
+
+# Debian 13 / Ubuntu 24.04 run sshd via ssh.socket. There, SIGHUP makes sshd re-exec and fail with
+# "Cannot bind any address" (the socket owns the port), leaving ssh.service failed. Restarting the
+# service is the correct way to apply config; ExecStartPre re-runs sshd -t and creates /run/sshd.
+# Existing sessions are separate sshd-session processes and survive.
+# Tasks notify "Reload sshd" (the listen name), not "Apply sshd configuration".
+- name: Apply sshd configuration
+  ansible.builtin.shell: |
+    if systemctl is-active --quiet ssh.socket; then
+      systemctl restart ssh
+    else
+      systemctl reload ssh
+    fi
+  changed_when: true
+  listen: Reload sshd
+
+- name: Reload nftables
+  ansible.builtin.systemd_service:
+    name: nftables
+    state: reloaded
+
+- name: Apply sysctl
+  ansible.builtin.command: /usr/lib/systemd/systemd-sysctl /etc/sysctl.d/99-bootstrap.conf
+  changed_when: true
+
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+
+- name: Restart fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted
+
+- name: Restart node exporter
+  ansible.builtin.service:
+    name: prometheus-node-exporter
+    state: restarted

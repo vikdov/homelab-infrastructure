@@ -1,0 +1,55 @@
+# Managed by Ansible - do not edit by hand, changes will be overwritten
+# Drop-in loaded by the 'confdir' line in /etc/chrony/chrony.conf.
+# Stock settings (drift file, RTC sync, makestep, leap seconds, log
+# directory, NTS directory) stay in the main file.
+
+# ---------------------------------------------------------------------
+# Time sources
+# ---------------------------------------------------------------------
+{% if bootstrap_ntp_servers | default([], true) | length > 0 %}
+# Explicit servers supplied via bootstrap_ntp_servers.
+{% for s in bootstrap_ntp_servers %}
+server {{ s }} iburst
+{% endfor %}
+{% else %}
+# No explicit servers supplied: use up to 4 addresses from a public pool.
+pool {{ bootstrap_ntp_fallback_pool | default('2.debian.pool.ntp.org', true) }} iburst maxsources 4
+{% endif %}
+{% if bootstrap_ntp_minsources | default(1, true) | int > 1 %}
+
+# Require this many selectable sources before updating the system clock.
+minsources {{ bootstrap_ntp_minsources | default(1, true) | int }}
+{% endif %}
+
+# ---------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------
+# Log system clock offset and frequency (uses the stock logdir).
+log tracking
+
+# Log a syslog message if the clock is adjusted by more than 0.5 s.
+logchange 0.5
+
+# ---------------------------------------------------------------------
+# Access control
+# ---------------------------------------------------------------------
+# Only allow chronyc to control the daemon from this machine.
+bindcmdaddress 127.0.0.1
+bindcmdaddress ::1
+{% if bootstrap_ntp_serve_lan | default(false, true) | bool %}
+
+# Act as a time server for your LAN so VMs and other devices can sync
+# from this host instead of the internet.
+allow {{ bootstrap_ntp_lan_cidr }}
+{% if bootstrap_ntp_local_fallback | default(false, true) | bool %}
+
+# Keep advertising local time if upstream is lost (stratum 10 = last
+# resort). This can mask a sync failure, so monitor 'chronyc tracking'.
+local stratum 10
+{% endif %}
+{% else %}
+
+# Client-only: disable the NTP server port so this host never answers
+# time requests. Local 'chronyc' still works via the Unix socket.
+port 0
+{% endif %}

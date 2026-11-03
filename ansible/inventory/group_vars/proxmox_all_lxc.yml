@@ -1,0 +1,4 @@
+---
+# Proxmox owns hostname, /etc/hosts, network, clock and kernel sysctls in containers.
+# Do the firewall at the PVE level; flip this only for privileged containers where nft works.
+bootstrap_firewall_manage_on_lxc: false

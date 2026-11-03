@@ -1,0 +1,79 @@
+---
+# Host identity: hostname, /etc/hosts, cloud-init policy, timezone, locale.
+# Hostname, /etc/hosts and cloud-init apply to VMs only; Proxmox owns them in LXC.
+# Timezone and locale apply to both guest types (tzdata and locales come from packages.yml).
+
+- name: Hostname, /etc/hosts and cloud-init policy (VM only; Proxmox owns these in LXC)
+  when: not bootstrap_is_lxc | bool
+  block:
+    - name: Set hostname
+      ansible.builtin.hostname:
+        name: "{{ bootstrap_hostname }}"
+        use: systemd
+
+    - name: Set FQDN line in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        line: "127.0.1.1 {{ bootstrap_fqdn }} {{ bootstrap_hostname }}"
+        insertafter: '^127\.0\.0\.1\s'
+
+    - name: Check whether cloud-init is installed (config dir exists)
+      ansible.builtin.stat:
+        path: /etc/cloud/cloud.cfg.d
+      register: bootstrap_cloud_cfg_dir
+
+    # Proxmox user-data sets manage_etc_hosts and a hostname, so cloud-init can rewrite both on
+    # later boots. force: false keeps this idempotent; setting the variable back to false does not
+    # remove the file, which is deliberate (re-enabling cloud-init is a manual decision).
+    - name: Optionally disable cloud-init entirely
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud-init.disabled
+        content: "disabled by ansible bootstrap\n"
+        force: false
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - bootstrap_disable_cloud_init | bool
+        - bootstrap_cloud_cfg_dir.stat.isdir | default(false)
+
+- name: Check the timezone exists
+  ansible.builtin.stat:
+    path: "/usr/share/zoneinfo/{{ bootstrap_timezone }}"
+  register: bootstrap_tz_stat
+
+- name: Assert timezone is valid
+  ansible.builtin.assert:
+    that: bootstrap_tz_stat.stat.exists
+    fail_msg: "Unknown timezone {{ bootstrap_timezone }}"
+    quiet: true
+
+- name: Set timezone
+  ansible.builtin.copy:
+    dest: /etc/timezone
+    content: "{{ bootstrap_timezone }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Link /etc/localtime
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ bootstrap_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+
+- name: Generate locale
+  community.general.locale_gen:
+    name: "{{ bootstrap_locale }}"
+    state: present
+  when: bootstrap_locale not in ['C', 'C.UTF-8', 'POSIX']
+
+- name: Set default locale
+  ansible.builtin.copy:
+    dest: /etc/default/locale
+    content: "LANG={{ bootstrap_locale }}\n"
+    owner: root
+    group: root
+    mode: "0644"
