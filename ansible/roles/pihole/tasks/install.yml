@@ -1,0 +1,57 @@
+---
+- name: Seed config and run the unattended installer
+  when: not pihole_bin.stat.exists
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  block:
+    - name: Create /etc/pihole
+      ansible.builtin.file:
+        path: /etc/pihole
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Seed pihole.toml (the v6 installer needs it in unattended mode)
+      ansible.builtin.template:
+        src: pihole.toml.j2
+        dest: /etc/pihole/pihole.toml
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+
+    - name: Download the installer (kept on disk for inspection)
+      ansible.builtin.get_url:
+        url: "{{ pihole_installer_url }}"
+        dest: "{{ pihole_state_dir }}/basic-install.sh"
+        checksum: "{{ pihole_installer_checksum | default(omit, true) }}"
+        force: "{{ pihole_installer_allow_unpinned | bool }}"
+        owner: root
+        group: root
+        mode: "0700"
+      register: pihole_installer_dl
+      retries: 3
+      delay: 5
+      until: pihole_installer_dl is succeeded
+
+    - name: Run the installer
+      ansible.builtin.command:
+        argv: [bash, "{{ pihole_state_dir }}/basic-install.sh", --unattended]
+        creates: /usr/local/bin/pihole
+
+# In check mode on a host without Pi-hole the install was only simulated, so the unit does not exist.
+- name: Enable and start pihole-FTL
+  ansible.builtin.systemd:
+    name: pihole-FTL
+    enabled: true
+    state: started
+  when: not ansible_check_mode or pihole_bin.stat.exists
+
+- name: Wait for DNS and web ports
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ item }}"
+    timeout: 60
+  loop: "{{ pihole_wait_ports }}"
+  when: not ansible_check_mode

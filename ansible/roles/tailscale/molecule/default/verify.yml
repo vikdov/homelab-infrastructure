@@ -1,0 +1,91 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Collect package facts
+      ansible.builtin.package_facts:
+
+    - name: Tailscale is installed
+      ansible.builtin.assert:
+        that: "'tailscale' in ansible_facts.packages"
+
+    - name: Read the apt source
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/tailscale.sources
+      register: tailscale_verify__source
+
+    - name: The repository points at the official host and the pinned keyring
+      ansible.builtin.assert:
+        that:
+          - "'https://pkgs.tailscale.com/stable/debian' in tailscale_verify__src"
+          - "'Signed-By: /usr/share/keyrings/tailscale-archive-keyring.gpg' in tailscale_verify__src"
+      vars:
+        tailscale_verify__src: "{{ tailscale_verify__source.content | b64decode }}"
+
+    - name: Tailscaled is enabled and active
+      ansible.builtin.command: "systemctl {{ item }} tailscaled" # noqa: command-instead-of-module
+      register: tailscale_verify__svc
+      changed_when: false
+      failed_when: tailscale_verify__svc.stdout not in ['enabled', 'active']
+      loop: [is-enabled, is-active]
+
+    - name: Forwarding is persisted and active
+      ansible.builtin.slurp:
+        src: /etc/sysctl.d/99-tailscale.conf
+      register: tailscale_verify__sysctl
+
+    - name: Read the runtime forwarding value
+      ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+      register: tailscale_verify__fwd
+      changed_when: false
+
+    - name: Forwarding values are correct
+      ansible.builtin.assert:
+        that:
+          - "'net.ipv4.ip_forward = 1' in (tailscale_verify__sysctl.content | b64decode)"
+          - tailscale_verify__fwd.stdout == '1'
+
+    - name: Not logged in yet, so the backend asks for a login
+      ansible.builtin.command: tailscale status --json
+      register: tailscale_verify__status
+      changed_when: false
+      failed_when: false
+
+    - name: Backend state is NeedsLogin
+      ansible.builtin.assert:
+        that: (tailscale_verify__status.stdout | from_json).BackendState == 'NeedsLogin'
+
+    - name: Re-run the install half without routes
+      ansible.builtin.import_role:
+        name: tailscale
+        tasks_from: install
+      vars:
+        tailscale_advertise_routes: []
+
+    - name: Stat the forwarding config
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/99-tailscale.conf
+      register: tailscale_verify__sysctl_after
+
+    - name: The forwarding config is gone
+      ansible.builtin.assert:
+        that: not tailscale_verify__sysctl_after.stat.exists
+
+    - name: Invalid input is rejected
+      block:
+        - name: Run with an IPv6 route
+          ansible.builtin.import_role:
+            name: tailscale
+            tasks_from: install
+          vars:
+            tailscale_advertise_routes: ["fd00::/8"]
+        - name: Must not be reached
+          ansible.builtin.fail:
+            msg: role accepted an IPv6 route
+      rescue:
+        - name: Failure came from the route validation
+          ansible.builtin.assert:
+            # the validation task loops, so the real message is in the per-item results
+            that: "'only IPv4 CIDRs' in (ansible_failed_result.results | map(attribute='msg') | join(' '))"

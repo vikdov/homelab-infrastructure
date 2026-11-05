@@ -1,0 +1,20 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    # TEST-NET prefixes routed via the container's own gateway (always on-link).
+    - name: Build test routes from the default route
+      ansible.builtin.set_fact:
+        static_routes_list:
+          - to: 198.51.100.0/24
+            via: "{{ ansible_facts['default_ipv4']['gateway'] }}"
+            dev: "{{ ansible_facts['default_ipv4']['interface'] }}"
+          - to: 203.0.113.0/24
+            via: "{{ ansible_facts['default_ipv4']['gateway'] }}"
+            dev: "{{ ansible_facts['default_ipv4']['interface'] }}"
+
+    - name: Apply the role
+      ansible.builtin.include_role:
+        name: static_routes

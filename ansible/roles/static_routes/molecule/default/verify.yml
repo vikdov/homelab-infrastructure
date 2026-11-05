@@ -1,0 +1,107 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    static_routes_verify__gw: "{{ ansible_facts['default_ipv4']['gateway'] }}"
+    static_routes_verify__dev: "{{ ansible_facts['default_ipv4']['interface'] }}"
+  tasks:
+    - name: Unit is enabled
+      ansible.builtin.command: systemctl is-enabled homelab-static-routes # noqa: command-instead-of-module
+      register: static_routes_verify__enabled
+      changed_when: false
+      failed_when: static_routes_verify__enabled.stdout != 'enabled'
+
+    - name: Unit is active
+      ansible.builtin.command: systemctl is-active homelab-static-routes # noqa: command-instead-of-module
+      register: static_routes_verify__active
+      changed_when: false
+      failed_when: static_routes_verify__active.stdout != 'active'
+
+    - name: Read owned routes
+      ansible.builtin.command: ip -4 -o route show proto 201
+      register: static_routes_verify__routes
+      changed_when: false
+
+    - name: Both routes are installed
+      ansible.builtin.assert:
+        that:
+          - "'198.51.100.0/24 via ' ~ static_routes_verify__gw in static_routes_verify__routes.stdout"
+          - "'203.0.113.0/24 via ' ~ static_routes_verify__gw in static_routes_verify__routes.stdout"
+
+    - name: Add a foreign route (different protocol) that must never be touched
+      ansible.builtin.command: >-
+        ip -4 route add 192.0.2.0/24
+        via {{ static_routes_verify__gw }}
+        dev {{ static_routes_verify__dev }}
+        proto static
+      changed_when: true
+
+    - name: Shrink the route list to one entry
+      ansible.builtin.set_fact:
+        static_routes_list:
+          - to: 198.51.100.0/24
+            via: "{{ static_routes_verify__gw }}"
+            dev: "{{ static_routes_verify__dev }}"
+
+    - name: Re-run the role
+      ansible.builtin.include_role:
+        name: static_routes
+
+    - name: Read all routes
+      ansible.builtin.command: ip -4 -o route show
+      register: static_routes_verify__all
+      changed_when: false
+
+    - name: Stale owned route is gone, kept and foreign routes survive
+      ansible.builtin.assert:
+        that:
+          - "'203.0.113.0/24' not in static_routes_verify__all.stdout"
+          - "'198.51.100.0/24 via ' ~ static_routes_verify__gw in static_routes_verify__all.stdout"
+          - "'192.0.2.0/24 via ' ~ static_routes_verify__gw in static_routes_verify__all.stdout"
+
+    - name: Remove all configured routes
+      ansible.builtin.set_fact:
+        static_routes_list: []
+
+    - name: Re-run the role with an empty list
+      ansible.builtin.include_role:
+        name: static_routes
+
+    - name: Check the leftovers
+      ansible.builtin.stat:
+        path: /etc/systemd/system/homelab-static-routes.service
+      register: static_routes_verify__unit
+
+    - name: Read all routes again
+      ansible.builtin.command: ip -4 -o route show
+      register: static_routes_verify__after
+      changed_when: false
+
+    - name: Unit and owned routes are removed, the foreign route remains
+      ansible.builtin.assert:
+        that:
+          - not static_routes_verify__unit.stat.exists
+          - "'198.51.100.0/24' not in static_routes_verify__after.stdout"
+          - "'192.0.2.0/24 via ' ~ static_routes_verify__gw in static_routes_verify__after.stdout"
+
+    - name: An invalid route is rejected
+      block:
+        - name: Apply a broken route list
+          ansible.builtin.set_fact:
+            static_routes_list:
+              - to: "10.0.0.0/8"
+                via: "not-an-ip"
+                dev: eth0
+        - name: Run the role
+          ansible.builtin.include_role:
+            name: static_routes
+        - name: Must not be reached
+          ansible.builtin.fail:
+            msg: role accepted an invalid route
+      rescue:
+        - name: Failure came from the validation
+          ansible.builtin.assert:
+            # the validation task loops, so the real message is in the per-item results
+            that: "'Invalid route' in (ansible_failed_result.results | map(attribute='msg') | join(' '))"

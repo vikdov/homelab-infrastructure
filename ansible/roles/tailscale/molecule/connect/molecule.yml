@@ -1,0 +1,26 @@
+---
+# Exercises connect.yml against a stub `tailscale` CLI: no network, no real tailnet needed.
+driver:
+  name: docker
+platforms:
+  - name: tailscale-connect-molecule
+    image: "geerlingguy/docker-debian12-ansible@sha256:e365f7f43a95b8bd31b4ed25da1a4e3a5ae576151c4df67cf51776e696644e4e"
+    pre_build_image: true
+    command: sleep infinity
+provisioner:
+  name: ansible
+  env:
+    # Make sibling roles resolvable: <scenario>/../../.. is the roles/ directory.
+    ANSIBLE_ROLES_PATH: "${MOLECULE_SCENARIO_DIRECTORY}/../../.."
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

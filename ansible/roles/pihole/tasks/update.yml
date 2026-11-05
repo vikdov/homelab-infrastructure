@@ -1,0 +1,27 @@
+---
+# Manual only (--tags pihole_update). Updates to the LATEST release; pihole_installer_ref pins only
+# the first install. Review the Pi-hole release notes before running this.
+- name: Read Pi-hole versions before the update
+  ansible.builtin.command: pihole -v
+  register: pihole_version_before
+  changed_when: false
+  check_mode: false
+
+- name: Update Pi-hole (core, FTL, web)
+  ansible.builtin.command: pihole -up
+  register: pihole_update_result
+  changed_when: false
+
+- name: Read Pi-hole versions after the update
+  ansible.builtin.command: pihole -v
+  register: pihole_version_after
+  changed_when: pihole_version_after.stdout != pihole_version_before.stdout
+  check_mode: false
+
+- name: Wait for DNS and web ports after the update
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ item }}"
+    timeout: 60
+  loop: "{{ pihole_wait_ports }}"
+  when: not ansible_check_mode

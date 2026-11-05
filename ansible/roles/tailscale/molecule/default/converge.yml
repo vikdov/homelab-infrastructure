@@ -1,0 +1,15 @@
+---
+# Only the install half: joining a tailnet needs a real auth key (see the `connect` scenario).
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    tailscale_advertise_routes:
+      - 10.10.0.0/16
+      - 192.168.1.0/24
+  tasks:
+    - name: Install and start tailscaled
+      ansible.builtin.import_role:
+        name: tailscale
+        tasks_from: install

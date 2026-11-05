@@ -1,0 +1,38 @@
+---
+- name: Pre-flight checks
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [always]
+
+- name: Create state directory
+  ansible.builtin.file:
+    path: "{{ pihole_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [always]
+
+- name: Check whether Pi-hole is installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/pihole
+  register: pihole_bin
+  tags: [always]
+
+- name: Install Pi-hole
+  ansible.builtin.import_tasks: install.yml
+  tags: [pihole, pihole_install]
+
+- name: Apply settings and local records
+  ansible.builtin.import_tasks: settings.yml
+  when: not ansible_check_mode or pihole_bin.stat.exists
+  tags: [pihole, pihole_settings]
+
+- name: Web password
+  ansible.builtin.import_tasks: password.yml
+  when: not ansible_check_mode or pihole_bin.stat.exists
+  tags: [pihole, pihole_password]
+
+# Runs only when asked for explicitly: --tags pihole_update
+- name: Update Pi-hole
+  ansible.builtin.import_tasks: update.yml
+  tags: [never, pihole_update]

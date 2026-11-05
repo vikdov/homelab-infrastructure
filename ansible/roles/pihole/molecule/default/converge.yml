@@ -1,0 +1,17 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    pihole_installer_allow_unpinned: true # CI only; production pins ref + checksum
+    pihole_firewall_ack: true
+    pihole_web_password: molecule-test-password
+    pihole_interface: eth0
+    pihole_extra_records: ["192.168.1.254 pve.home.arpa"]
+    pihole_listening_mode: ALL # the default is LOCAL; verify.yml asserts ALL, matching production
+    pihole_extra_settings:
+      ntp.ipv4.active: false
+      ntp.ipv6.active: false
+      ntp.sync.active: false
+  roles:
+    - role: pihole

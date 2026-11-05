@@ -1,0 +1,46 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Syncs the static routes owned by protocol marker {{ static_routes_proto | int }}:
+# add/replace the wanted routes first, then delete stale owned ones, so a
+# re-sync never drops routes that stay. Routes of other protocols are untouched.
+set -u
+
+PROTO={{ static_routes_proto | int }}
+RETRIES={{ static_routes_retries | int }}
+DESIRED=" {% for r in static_routes_list %}{{ r.to | regex_replace('/32$', '') }} {% endfor %}"
+
+add_route() {
+    n=0
+    until ip -4 route replace "$1" via "$2" dev "$3" proto "$PROTO"; do
+        n=$((n + 1))
+        if [ "$n" -ge "$RETRIES" ]; then
+            echo "giving up on route $1 via $2 dev $3" >&2
+            return 1
+        fi
+        sleep 1
+    done
+}
+
+apply_routes() {
+    rc=0
+    while read -r to via dev; do
+        add_route "$to" "$via" "$dev" || rc=1
+    done <<'ROUTES'
+{% for r in static_routes_list %}
+{{ r.to }} {{ r.via }} {{ r.dev }}
+{% endfor %}
+ROUTES
+    ip -4 -o route show proto "$PROTO" | while read -r dst _; do
+        case "$DESIRED" in
+            *" $dst "*) ;;
+            *) ip -4 route del "$dst" proto "$PROTO" || echo "could not remove stale route $dst" >&2 ;;
+        esac
+    done
+    return "$rc"
+}
+
+case "${1:-}" in
+    start) apply_routes ;;
+    stop) ip -4 route flush proto "$PROTO" ;;
+    *) echo "usage: $0 start|stop" >&2; exit 2 ;;
+esac

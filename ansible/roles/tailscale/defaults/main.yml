@@ -1,0 +1,18 @@
+---
+tailscale_repo_distro: "{{ ansible_facts['distribution'] | lower }}" # debian or ubuntu
+tailscale_repo_codename: "{{ ansible_facts['distribution_release'] }}"
+tailscale_hostname: "{{ inventory_hostname }}"
+# Pin the package (e.g. "1.80.3"); empty installs the newest release once and never upgrades afterwards.
+tailscale_version: ""
+# Optional "sha256:<hex>" of the apt signing key. Empty = TLS-only trust.
+# Set it to pin the key; update it when Tailscale rotates the key (the download then refreshes).
+tailscale_signing_key_checksum: ""
+tailscale_authkey: "" # only needed for the first login
+# Staged here (tmpfs, mode 0600) for `tailscale up --auth-key=file:...` and removed right after,
+# so the key never appears in a process command line.
+tailscale_authkey_file: /run/tailscale/authkey
+tailscale_advertise_routes: [] # IPv4 CIDRs only (the role enables IPv4 forwarding only)
+tailscale_accept_dns: false # Pi-hole is the resolver here; do not let tailscaled rewrite resolv.conf
+tailscale_accept_routes: false
+tailscale_login_states: [NeedsLogin, NoState, Unknown]
+tailscale_up_timeout: 60s # how long `tailscale up` may wait for the Running state

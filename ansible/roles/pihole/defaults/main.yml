@@ -1,0 +1,56 @@
+---
+# ---- Installer supply-chain pin (REQUIRED unless pihole_installer_allow_unpinned) ----
+# Tag of pi-hole/pi-hole whose basic-install.sh is used, e.g. "v6.x.y".
+pihole_installer_ref: ""
+# "sha256:<64 hex>" of that exact script. See README for how to compute it.
+pihole_installer_checksum: ""
+# Escape hatch for labs/CI only: runs the unpinned https://install.pi-hole.net script.
+pihole_installer_allow_unpinned: false
+pihole_installer_url: >-
+  {{ ('https://raw.githubusercontent.com/pi-hole/pi-hole/' ~ pihole_installer_ref
+      ~ '/automated%20install/basic-install.sh')
+     if pihole_installer_ref | length > 0 else 'https://install.pi-hole.net' }}
+
+# ---- Basics ----
+# pihole_web_password has NO default on purpose: it is required (put it in the vault).
+# Verified via API and set via pihole setpassword if missing or invalid on every run.
+pihole_interface: "{{ ansible_facts['default_ipv4']['interface'] | default('eth0') }}"
+pihole_domain: home.arpa
+pihole_upstreams: [9.9.9.9, 149.112.112.112]
+# Pi-hole's own default. Use ALL only behind a firewall (see pihole_firewall_ack).
+pihole_listening_mode: LOCAL
+# NOT applied to Pi-hole. This must match the port Pi-hole actually serves the web UI/API on
+# (webserver.port, default 80); it is only used for the readiness wait and the password API check.
+pihole_web_port: 80
+# Checked on 127.0.0.1; with listening modes that do not bind loopback, override this list.
+pihole_wait_ports: [53, "{{ pihole_web_port }}"]
+pihole_web_password_min_length: 12
+
+# listeningMode ALL answers queries from every interface/subnet. Set this to true to confirm that
+# port 53 and the web UI are restricted to trusted networks by a firewall (e.g. the Proxmox firewall).
+pihole_firewall_ack: false
+
+# ---- Local DNS records ----
+pihole_manage_inventory_records: true
+pihole_inventory_groups: [] # e.g. [proxmox_all_lxc, proxmox_all_qemu] (set in group_vars)
+pihole_extra_records: [] # e.g. ["192.168.1.254 pve.home.arpa"]
+
+# Settings applied with `pihole-FTL --config KEY VALUE` when the live value differs.
+# Container hosts that cannot set the clock should add the ntp.* keys to pihole_extra_settings.
+pihole_settings:
+  dns.upstreams: "{{ pihole_upstreams }}"
+  dns.listeningMode: "{{ pihole_listening_mode }}"
+  dns.domain.name: "{{ pihole_domain }}"
+  dns.dnssec: true
+
+# Merged over pihole_settings to add keys or change other values. Does NOT affect dns.hosts (always
+# built from the inventory and pihole_extra_records). Overriding dns.listeningMode here bypasses
+# the firewall-ack preflight check, so set pihole_listening_mode instead.
+pihole_extra_settings: {}
+
+# Root-only state (restart flag, downloaded installer). Deliberately NOT under /etc/pihole.
+pihole_state_dir: /var/lib/ansible-pihole
+
+# Internal, not meant to be overridden. Characters stripped from both the live value and the
+# desired value before comparing, so `[ 9.9.9.9, 149.112.112.112 ]` equals `["9.9.9.9", "149.112.112.112"]`.
+__pihole_norm_re: '[\s"\[\],]'

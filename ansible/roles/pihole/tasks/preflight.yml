@@ -1,0 +1,55 @@
+---
+- name: Check platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: Pi-hole role supports Debian-family hosts (Debian, Ubuntu) running systemd.
+    quiet: true
+
+# No no_log here: the expressions do not contain the secret, and no_log would hide fail_msg.
+- name: Check web password
+  ansible.builtin.assert:
+    that:
+      - pihole_web_password is defined
+      - pihole_web_password | length >= pihole_web_password_min_length
+    fail_msg: >-
+      pihole_web_password (vault_pihole_web_password) must be set and at least
+      {{ pihole_web_password_min_length }} characters long.
+    quiet: true
+
+- name: Check installer pin
+  ansible.builtin.assert:
+    that:
+      - >-
+        pihole_installer_allow_unpinned | bool or
+        (pihole_installer_ref | length > 0 and
+         pihole_installer_checksum is match('^sha256:[0-9a-f]{64}$'))
+    fail_msg: >-
+      Set pihole_installer_ref (a pi-hole/pi-hole tag) and pihole_installer_checksum
+      ("sha256:<hex>"), or set pihole_installer_allow_unpinned: true for lab use only.
+    quiet: true
+
+- name: Check listening mode
+  ansible.builtin.assert:
+    that: pihole_listening_mode in ['LOCAL', 'SINGLE', 'BIND', 'ALL', 'NONE']
+    fail_msg: "pihole_listening_mode must be one of LOCAL, SINGLE, BIND, ALL, NONE (case-sensitive)."
+    quiet: true
+
+- name: Check exposure acknowledgement
+  ansible.builtin.assert:
+    that: pihole_listening_mode != 'ALL' or pihole_firewall_ack | bool
+    fail_msg: >-
+      listeningMode ALL makes this an open resolver unless firewalled. Restrict ports 53 and
+      {{ pihole_web_port }} to trusted networks, then set pihole_firewall_ack: true.
+    quiet: true
+
+- name: Check interface exists on the host
+  ansible.builtin.assert:
+    that:
+      - pihole_interface | length > 0
+      - pihole_interface in ansible_facts['interfaces']
+    fail_msg: >-
+      pihole_interface '{{ pihole_interface }}' is empty or not present on this host
+      (found: {{ ansible_facts['interfaces'] | join(', ') }}). Set it explicitly.
+    quiet: true

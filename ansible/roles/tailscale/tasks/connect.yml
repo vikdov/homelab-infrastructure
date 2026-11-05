@@ -1,0 +1,123 @@
+---
+- name: Wait for the tailscaled socket
+  ansible.builtin.wait_for:
+    path: /run/tailscale/tailscaled.sock
+    timeout: 30
+
+# Read-only tasks run in check mode too (command is otherwise skipped there).
+- name: Read Tailscale status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Work out the backend state
+  ansible.builtin.set_fact:
+    tailscale_backend_state: >-
+      {{ (tailscale_status.stdout | from_json).BackendState | default('Unknown')
+         if tailscale_status.stdout is match('(?s)^\s*\{') else 'Unknown' }}
+
+- name: Stop when the node waits for device approval
+  ansible.builtin.assert:
+    that: tailscale_backend_state != 'NeedsMachineAuth'
+    fail_msg: "Node needs device approval in the Tailscale admin console. Approve it and rerun."
+    quiet: true
+
+# No no_log here: the condition does not contain the key, and no_log would hide fail_msg.
+- name: Require an auth key for the first login
+  ansible.builtin.assert:
+    that: tailscale_authkey | length > 0
+    fail_msg: "Node is not logged in; set tailscale_authkey (vault_tailscale_authkey)."
+    quiet: true
+  when: tailscale_backend_state in tailscale_login_states
+
+# `--auth-key=file:` keeps the key out of argv; older clients only take the key inline.
+- name: Read the tailscale up help
+  ansible.builtin.command:
+    argv: [tailscale, up, --help]
+  register: tailscale_up_help
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: tailscale_backend_state in tailscale_login_states
+
+- name: Require a client that supports file-based auth keys
+  ansible.builtin.assert:
+    that: "'file:' in (tailscale_up_help.stdout ~ tailscale_up_help.stderr)"
+    fail_msg: "This tailscale client has no --auth-key=file: support; upgrade it (or unpin tailscale_version)."
+    quiet: true
+  when: tailscale_backend_state in tailscale_login_states
+
+- name: Join / reconnect to the tailnet
+  when: tailscale_backend_state != 'Running'
+  block:
+    - name: Stage the auth key (tmpfs, mode 0600)
+      ansible.builtin.copy:
+        content: "{{ tailscale_authkey }}"
+        dest: "{{ tailscale_authkey_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: tailscale_backend_state in tailscale_login_states
+
+    # --reset makes the inventory the single source of truth: flags not listed here are reset
+    # to their defaults (otherwise `tailscale up` refuses to change an already configured node).
+    - name: Join / reconnect to the tailnet
+      ansible.builtin.command:
+        argv: "{{ _base_argv + _authkey_argv }}"
+      vars:
+        _base_argv:
+          - tailscale
+          - up
+          - --reset
+          - "--timeout={{ tailscale_up_timeout }}"
+          - "--hostname={{ tailscale_hostname }}"
+          - "--accept-dns={{ tailscale_accept_dns | bool | lower }}"
+          - "--accept-routes={{ tailscale_accept_routes | bool | lower }}"
+          - "--advertise-routes={{ tailscale_advertise_routes | join(',') }}"
+        _authkey_argv: >-
+          {{ ['--auth-key=file:' ~ tailscale_authkey_file]
+             if tailscale_backend_state in tailscale_login_states
+             else [] }}
+      changed_when: true
+  always:
+    - name: Remove the staged auth key
+      ansible.builtin.file:
+        path: "{{ tailscale_authkey_file }}"
+        state: absent
+
+# Opaque before/after comparison of the prefs: no dependency on pref field names.
+- name: Align hostname, routes and DNS handling with the inventory
+  ansible.builtin.shell: |
+    set -eu
+    before=$(tailscale debug prefs)
+    tailscale set \
+      {{ ('--hostname=' ~ tailscale_hostname) | quote }} \
+      {{ ('--advertise-routes=' ~ (tailscale_advertise_routes | join(','))) | quote }} \
+      {{ ('--accept-dns=' ~ (tailscale_accept_dns | bool | lower)) | quote }} \
+      {{ ('--accept-routes=' ~ (tailscale_accept_routes | bool | lower)) | quote }}
+    after=$(tailscale debug prefs)
+    [ "$before" = "$after" ] || echo "prefs changed"
+  register: tailscale_set
+  changed_when: "'prefs changed' in tailscale_set.stdout"
+
+- name: Confirm the node is Running
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_final
+  changed_when: false
+  check_mode: false
+  until: >-
+    tailscale_final.stdout is match('(?s)^\s*\{')
+    and (tailscale_final.stdout | from_json).BackendState == 'Running'
+  retries: 10
+  delay: 3
+  when: not ansible_check_mode
+
+- name: Remind about route approval
+  ansible.builtin.debug:
+    msg: >-
+      Approve {{ tailscale_advertise_routes | join(', ') }} in the Tailscale admin console (or add an
+      autoApprovers rule), and use a tagged auth key so the node key does not expire.
+  when: tailscale_advertise_routes | length > 0

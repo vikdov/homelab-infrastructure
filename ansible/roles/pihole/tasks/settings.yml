@@ -1,0 +1,117 @@
+---
+# Skips hosts without an IPv4 ansible_host or whose inventory name already contains a dot
+# (a warning lists them); underscores become dashes so names are valid hostnames.
+- name: Build local DNS records from the inventory
+  ansible.builtin.set_fact:
+    pihole_inventory_records: "{{ _ips | zip(_names) | map('join', ' ') | list }}"
+    pihole_inventory_skipped: "{{ _hosts | difference(_pairs | map(attribute='0') | list) }}"
+  vars:
+    _hosts: "{{ pihole_inventory_groups | select('in', groups) | map('extract', groups) | flatten | unique | sort }}"
+    _all_ips: "{{ _hosts | map('extract', hostvars, 'ansible_host') | map('default', '', true) | list }}"
+    _pairs: >-
+      {{ _hosts | zip(_all_ips)
+         | selectattr('1', 'match', '^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+         | selectattr('0', 'match', '^[^.]+$') | list }}
+    _ips: "{{ _pairs | map(attribute='1') | list }}"
+    _names: >-
+      {{ _pairs | map(attribute='0') | map('lower') | map('regex_replace', '_', '-')
+         | map('regex_replace', '$', '.' ~ pihole_domain) | list }}
+  when: pihole_manage_inventory_records | bool
+
+- name: Warn about inventory hosts that got no DNS record
+  ansible.builtin.debug:
+    msg: >-
+      No Pi-hole record for (no IPv4 ansible_host, or name contains a dot):
+      {{ pihole_inventory_skipped | join(', ') }}
+  when:
+    - pihole_manage_inventory_records | bool
+    - pihole_inventory_skipped | length > 0
+
+# dns.hosts is always managed as a whole list: records added in the web UI are removed.
+- name: Merge records into the desired settings
+  ansible.builtin.set_fact:
+    pihole_effective_settings: >-
+      {{ pihole_settings | combine(pihole_extra_settings)
+         | combine({'dns.hosts': ((pihole_inventory_records | default([])) + pihole_extra_records) | unique | list}) }}
+
+# Read-only, so it also runs under --check. A missing/renamed key fails loudly here.
+- name: Read live Pi-hole settings
+  ansible.builtin.command:
+    argv: [pihole-FTL, --config, "{{ item.key }}"]
+  loop: "{{ pihole_effective_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: pihole_read
+  changed_when: false
+  check_mode: false
+
+- name: Determine whether any setting differs
+  ansible.builtin.set_fact:
+    pihole_settings_drift: >-
+      {{ pihole_read.results | map(attribute='stdout') | map('regex_replace', __pihole_norm_re, '') | list
+         != pihole_read.results | map(attribute='item') | map(attribute='value') | map('to_json')
+            | map('regex_replace', __pihole_norm_re, '') | list }}
+
+- name: Show settings that would change
+  ansible.builtin.debug:
+    msg: "{{ item.item.key }}: {{ item.stdout }} -> {{ item.item.value | to_json }}"
+  loop: "{{ pihole_read.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when:
+    - ansible_check_mode
+    - >-
+      (item.stdout | regex_replace(__pihole_norm_re, ''))
+      != (item.item.value | to_json | regex_replace(__pihole_norm_re, ''))
+
+# The flag is written BEFORE applying, so a failure mid-way still leads to a restart on the next run.
+- name: Flag a pending restart
+  ansible.builtin.file:
+    path: "{{ pihole_state_dir }}/restart-pending"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
+  when: pihole_settings_drift | bool
+
+- name: Apply changed settings
+  ansible.builtin.command:
+    argv:
+      - pihole-FTL
+      - --config
+      - "{{ item.item.key }}"
+      - "{{ item.item.value if item.item.value is string else (item.item.value | to_json) }}"
+  loop: "{{ pihole_read.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: >-
+    (item.stdout | regex_replace(__pihole_norm_re, ''))
+    != (item.item.value | to_json | regex_replace(__pihole_norm_re, ''))
+  changed_when: true
+
+- name: Check for a pending restart
+  ansible.builtin.stat:
+    path: "{{ pihole_state_dir }}/restart-pending"
+  register: pihole_restart_flag
+
+- name: Restart pihole-FTL
+  ansible.builtin.systemd:
+    name: pihole-FTL
+    state: restarted
+  when: pihole_restart_flag.stat.exists
+
+- name: Wait for DNS and web ports after restart
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ item }}"
+    timeout: 60
+  loop: "{{ pihole_wait_ports }}"
+  when: pihole_restart_flag.stat.exists and not ansible_check_mode
+
+- name: Clear the restart flag
+  ansible.builtin.file:
+    path: "{{ pihole_state_dir }}/restart-pending"
+    state: absent
+  when: pihole_restart_flag.stat.exists

@@ -1,0 +1,81 @@
+---
+- name: Prepare
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Create the socket directory the role waits on
+      ansible.builtin.file:
+        path: /run/tailscale
+        state: directory
+        mode: "0755"
+
+    - name: Fake tailscaled socket
+      ansible.builtin.file:
+        path: /run/tailscale/tailscaled.sock
+        state: touch
+        mode: "0600"
+        modification_time: preserve
+        access_time: preserve
+
+    - name: Install the stub tailscale CLI
+      ansible.builtin.copy:
+        dest: /usr/bin/tailscale
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Minimal fake of the tailscale CLI: models only what the role calls.
+          set -eu
+          D=/var/lib/fake-tailscale
+          mkdir -p "$D"
+          printf '%s\n' "$*" >> "$D/calls.log"
+          [ -f "$D/state" ] || echo NeedsLogin > "$D/state"
+          [ -f "$D/prefs" ] || : > "$D/prefs"
+
+          set_pref() {
+            { grep -v "^$1=" "$D/prefs" || true; echo "$1=$2"; } | sort > "$D/prefs.new"
+            mv "$D/prefs.new" "$D/prefs"
+          }
+          apply_flags() {
+            for a in "$@"; do
+              case "$a" in
+                --hostname=*) set_pref hostname "${a#*=}" ;;
+                --advertise-routes=*) set_pref routes "${a#*=}" ;;
+                --accept-dns=*) set_pref dns "${a#*=}" ;;
+                --accept-routes=*) set_pref accept_routes "${a#*=}" ;;
+              esac
+            done
+          }
+
+          cmd="${1:-}"
+          [ $# -gt 0 ] && shift
+          case "$cmd" in
+            status) printf '{"BackendState":"%s"}\n' "$(cat "$D/state")" ;;
+            debug) cat "$D/prefs" ;;
+            set) apply_flags "$@" ;;
+            up)
+              if [ "${1:-}" = "--help" ]; then
+                echo '  --auth-key string   node authorization key; if it begins with "file:", read it from that path'
+                exit 0
+              fi
+              keyfile=""
+              for a in "$@"; do
+                case "$a" in
+                  --auth-key=file:*) keyfile="${a#--auth-key=file:}" ;;
+                  --auth-key=*) echo "auth key passed on the command line" >&2; exit 1 ;;
+                esac
+              done
+              if [ -n "$keyfile" ]; then
+                [ -s "$keyfile" ] || { echo "empty auth key file" >&2; exit 1; }
+                cp "$keyfile" "$D/key_seen"
+              elif [ "$(cat "$D/state")" = NeedsLogin ]; then
+                echo "login required" >&2
+                exit 1
+              fi
+              apply_flags "$@"
+              echo Running > "$D/state"
+              ;;
+            *) echo "stub: unsupported command: $cmd" >&2; exit 1 ;;
+          esac

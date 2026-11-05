@@ -1,0 +1,141 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    tailscale_verify__secret: tskey-auth-molecule-secret
+  tasks:
+    - name: Read the call log
+      ansible.builtin.command: cat /var/lib/fake-tailscale/calls.log
+      register: tailscale_verify__calls
+      changed_when: false
+
+    - name: Exactly one login happened, without the key on the command line
+      ansible.builtin.assert:
+        that:
+          - _logins | length == 1
+          - _logins | select('match', '.*--auth-key=file:/run/tailscale/authkey') | list | length == 1
+          - tailscale_verify__secret not in tailscale_verify__calls.stdout
+      vars:
+        _logins: "{{ tailscale_verify__calls.stdout_lines | select('match', '^up --reset ') | list }}"
+
+    - name: Read what the client saw
+      ansible.builtin.command: "cat /var/lib/fake-tailscale/{{ item }}"
+      register: tailscale_verify__seen
+      changed_when: false
+      loop: [key_seen, prefs, state]
+
+    - name: The key reached the client, prefs match the inventory, node is Running
+      ansible.builtin.assert:
+        that:
+          - tailscale_verify__seen.results[0].stdout == tailscale_verify__secret
+          - "'hostname=homelab-net' in tailscale_verify__seen.results[1].stdout_lines"
+          - "'routes=10.10.0.0/16,192.168.1.0/24' in tailscale_verify__seen.results[1].stdout_lines"
+          - "'dns=false' in tailscale_verify__seen.results[1].stdout_lines"
+          - "'accept_routes=false' in tailscale_verify__seen.results[1].stdout_lines"
+          - tailscale_verify__seen.results[2].stdout == 'Running'
+
+    - name: The staged key file was removed
+      ansible.builtin.stat:
+        path: /run/tailscale/authkey
+      register: tailscale_verify__keyfile
+
+    - name: No key file is left behind
+      ansible.builtin.assert:
+        that: not tailscale_verify__keyfile.stat.exists
+
+    # ---- drift: someone changes the hostname by hand, the role puts it back
+    - name: Introduce drift
+      ansible.builtin.command: tailscale set --hostname=drifted
+      changed_when: true
+
+    - name: Re-run the role
+      ansible.builtin.import_role:
+        name: tailscale
+        tasks_from: connect
+      vars:
+        tailscale_hostname: homelab-net
+        tailscale_authkey: "{{ tailscale_verify__secret }}"
+        tailscale_advertise_routes: [10.10.0.0/16, 192.168.1.0/24]
+
+    - name: Read prefs after the drift fix
+      ansible.builtin.command: cat /var/lib/fake-tailscale/prefs
+      register: tailscale_verify__prefs
+      changed_when: false
+
+    - name: Drift is corrected
+      ansible.builtin.assert:
+        that: "'hostname=homelab-net' in tailscale_verify__prefs.stdout_lines"
+
+    # ---- reconnect: stopped node comes back without any auth key
+    - name: Stop the node
+      ansible.builtin.shell: echo Stopped > /var/lib/fake-tailscale/state
+      changed_when: true
+
+    - name: Reconnect without an auth key
+      ansible.builtin.import_role:
+        name: tailscale
+        tasks_from: connect
+      vars:
+        tailscale_hostname: homelab-net
+        tailscale_authkey: ""
+        tailscale_advertise_routes: [10.10.0.0/16, 192.168.1.0/24]
+
+    - name: Read the call log again
+      ansible.builtin.command: cat /var/lib/fake-tailscale/calls.log
+      register: tailscale_verify__calls2
+      changed_when: false
+
+    - name: Read the state again
+      ansible.builtin.command: cat /var/lib/fake-tailscale/state
+      register: tailscale_verify__state2
+      changed_when: false
+
+    - name: The reconnect used no auth key
+      ansible.builtin.assert:
+        that:
+          - tailscale_verify__calls2.stdout_lines | select('match', '^up --reset ') | list | length == 2
+          - tailscale_verify__calls2.stdout_lines | select('match', '^up --reset .*--auth-key') | list | length == 1
+          - tailscale_verify__state2.stdout == 'Running'
+
+    # ---- failure paths
+    - name: Logged out without an auth key must fail
+      block:
+        - name: Log the node out
+          ansible.builtin.shell: echo NeedsLogin > /var/lib/fake-tailscale/state
+          changed_when: true
+        - name: Run the role without a key
+          ansible.builtin.import_role:
+            name: tailscale
+            tasks_from: connect
+          vars:
+            tailscale_hostname: homelab-net
+            tailscale_authkey: ""
+        - name: Must not be reached
+          ansible.builtin.fail:
+            msg: role logged in without an auth key
+      rescue:
+        - name: Failure names the missing variable
+          ansible.builtin.assert:
+            that: "'tailscale_authkey' in ansible_failed_result.msg"
+
+    - name: A node waiting for approval must fail
+      block:
+        - name: Put the node into NeedsMachineAuth
+          ansible.builtin.shell: echo NeedsMachineAuth > /var/lib/fake-tailscale/state
+          changed_when: true
+        - name: Run the role
+          ansible.builtin.import_role:
+            name: tailscale
+            tasks_from: connect
+          vars:
+            tailscale_hostname: homelab-net
+            tailscale_authkey: "{{ tailscale_verify__secret }}"
+        - name: Must not be reached
+          ansible.builtin.fail:
+            msg: role continued while the node awaits approval
+      rescue:
+        - name: Failure mentions the approval
+          ansible.builtin.assert:
+            that: "'device approval' in ansible_failed_result.msg"
