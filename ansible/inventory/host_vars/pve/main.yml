@@ -1,0 +1,2 @@
+---
+restic_paths: [/etc, /root]       # /etc includes /etc/pve (the cluster config)
