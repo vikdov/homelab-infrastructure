@@ -21,7 +21,7 @@ compose:
 #    | selectattr('ip-address-type','eq','ipv4')
 #    | map(attribute='ip-address') | reject('match','^127\.') | first
 
-# Automatically group hosts by Proxmox tags (e.g., tag_web, tag_db)[cite: 1]
+# Automatically group hosts by Proxmox tags (e.g., tag_web, tag_db)
 keyed_groups:
   - key: proxmox_tags_parsed
     prefix: tag

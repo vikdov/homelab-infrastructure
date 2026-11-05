@@ -1,0 +1,7 @@
+# Seed for the unattended installer only (written once, never re-templated).
+# Pi-hole rewrites this file; ongoing configuration is applied by tasks/settings.yml
+# via `pihole-FTL --config`, so edit role variables, not this file.
+[dns]
+  interface = "{{ pihole_interface }}"
+  upstreams = {{ pihole_upstreams | to_json }}
+  listeningMode = "{{ pihole_listening_mode }}"

@@ -1,0 +1,46 @@
+---
+# --- static routes: replies to other VNets must leave via the PVE gateway, not the LAN router ---
+static_routes_list:
+  - { to: 10.10.0.0/16, via: 10.10.10.1, dev: eth1 }
+
+# --- Pi-hole ---
+pihole_web_password: "{{ vault_pihole_web_password }}"
+pihole_upstreams: [9.9.9.9, 149.112.112.112]
+
+# LAN IP of the edge host that serves edge_services. Replace with IP if it has different name
+pihole_edge_ip: "{{ hostvars['edge'].ansible_host }}"
+# No regex backreferences: prefix with "<ip> ", suffix with ".<edge_domain>".
+pihole_extra_records: >-
+  {{ ['192.168.1.254 pve.home.arpa']
+     + (hostvars['edge'].edge_services | map(attribute='name')
+        | map('regex_replace', '^', pihole_edge_ip ~ ' ')
+        | map('regex_replace', '$', '.' ~ hostvars['edge'].edge_domain) | list) }}
+
+# Real values required (README: "Computing the installer checksum"); preflight checks if the checksum matches
+pihole_installer_ref: "v6.5"
+pihole_installer_checksum: "sha256:0c67c8f8358fede4b4dd8d51b429114461c9bb90ad56ff00ef05637f664bf3ac"
+
+pihole_interface: eth0
+pihole_domain: home.arpa
+
+# ALL is needed because clients arrive routed (VNets, tailnet). Ack only while 53/80 are firewalled
+# to those networks.
+pihole_listening_mode: ALL
+pihole_firewall_ack: true
+
+pihole_inventory_groups:
+  - proxmox_all_lxc
+  - proxmox_all_qemu
+
+# LXC cannot set the clock, so Pi-hole's NTP client is off.
+pihole_extra_settings:
+  ntp.ipv4.active: false
+  ntp.ipv6.active: false
+  ntp.sync.active: false
+
+# --- Tailscale subnet router ---
+tailscale_hostname: homelab-net
+tailscale_authkey: "{{ vault_tailscale_authkey | default('') }}"
+tailscale_advertise_routes:
+  - 10.10.0.0/16
+  - 192.168.1.0/24

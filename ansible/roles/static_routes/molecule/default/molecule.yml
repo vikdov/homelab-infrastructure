@@ -1,0 +1,31 @@
+---
+driver:
+  name: docker
+platforms:
+  - name: static-routes-molecule
+    image: "geerlingguy/docker-debian12-ansible@sha256:e365f7f43a95b8bd31b4ed25da1a4e3a5ae576151c4df67cf51776e696644e4e"
+    pre_build_image: true
+    privileged: true # NET_ADMIN for `ip route`, systemd inside the container
+    cgroupns_mode: host
+    command: ""
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /tmp
+provisioner:
+  name: ansible
+  env:
+    # Make sibling roles resolvable: <scenario>/../../.. is the roles/ directory.
+    ANSIBLE_ROLES_PATH: "${MOLECULE_SCENARIO_DIRECTORY}/../../.."
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - converge
+    - idempotence
+    - verify
+    - destroy

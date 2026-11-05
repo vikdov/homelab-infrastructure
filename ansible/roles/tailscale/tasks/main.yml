@@ -1,0 +1,15 @@
+---
+- name: Check whether tailscale is installed
+  ansible.builtin.stat:
+    path: /usr/bin/tailscale
+  register: tailscale_bin
+  tags: [always]
+
+- name: Install Tailscale
+  ansible.builtin.import_tasks: install.yml
+  tags: [tailscale, tailscale_install]
+
+- name: Join the tailnet and advertise routes
+  ansible.builtin.import_tasks: connect.yml
+  when: not ansible_check_mode or tailscale_bin.stat.exists
+  tags: [tailscale, tailscale_connect]

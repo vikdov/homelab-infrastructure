@@ -1,0 +1,9 @@
+---
+# IPv4 only: [{ to: "10.10.0.0/16", via: "10.10.10.1", dev: eth1 }]
+static_routes_list: []
+# Marker for routes owned by this role. Only routes carrying it are ever added,
+# replaced or removed. Must not collide with a protocol already in use
+# (see /etc/iproute2/rt_protos).
+static_routes_proto: 201
+# Seconds to keep retrying a route at boot (interface or gateway not up yet).
+static_routes_retries: 30

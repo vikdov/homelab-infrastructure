@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Homelab static routes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The script retries each route itself, so no Restart= (needs systemd >= 244 on oneshot) is used.
+TimeoutStartSec={{ (static_routes_list | length * (static_routes_retries | int)) + 30 }}
+ExecStart=/usr/local/sbin/homelab-static-routes start
+ExecReload=/usr/local/sbin/homelab-static-routes start
+ExecStop=-/usr/local/sbin/homelab-static-routes stop
+
+[Install]
+WantedBy=multi-user.target

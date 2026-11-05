@@ -1,0 +1,96 @@
+---
+- name: Validate static routes
+  ansible.builtin.assert:
+    that:
+      - item.to is defined and item.to is match('^[0-9]{1,3}([.][0-9]{1,3}){3}/[0-9]{1,2}$')
+      - item.via is defined and item.via is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+      - item.dev is defined and item.dev is match('^[A-Za-z0-9_.-]{1,15}$')
+    fail_msg: "Invalid route {{ item }}: need IPv4 'to' (CIDR), IPv4 'via' and 'dev'."
+    quiet: true
+  loop: "{{ static_routes_list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Validate route protocol marker and retry budget
+  ansible.builtin.assert:
+    that:
+      - static_routes_proto | int > 0
+      - static_routes_proto | int < 256
+      - static_routes_retries | int > 0
+    fail_msg: static_routes_proto must be 1-255 and static_routes_retries must be positive.
+    quiet: true
+
+- name: Check for an existing routes unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/homelab-static-routes.service
+  register: static_routes_unit_file
+
+- name: Remove routes and unit when no routes are configured
+  when:
+    - static_routes_list | length == 0
+    - static_routes_unit_file.stat.exists
+  block:
+    - name: Stop and disable the unit (ExecStop flushes the managed routes)
+      ansible.builtin.systemd:
+        name: homelab-static-routes
+        state: stopped
+        enabled: false
+
+    - name: Remove the unit file and the script
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/homelab-static-routes.service
+        - /usr/local/sbin/homelab-static-routes
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+- name: Static routes unit
+  when: static_routes_list | length > 0
+  block:
+    - name: Install iproute2
+      ansible.builtin.apt:
+        name: iproute2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: "{{ bootstrap_apt_lock_timeout | default(300) }}"
+
+    - name: Deploy the route script
+      ansible.builtin.template:
+        src: homelab-static-routes.sh.j2
+        dest: /usr/local/sbin/homelab-static-routes
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Reload static routes
+
+    - name: Deploy unit file
+      ansible.builtin.template:
+        src: homelab-static-routes.service.j2
+        dest: /etc/systemd/system/homelab-static-routes.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: static_routes_unit
+      notify:
+        - Reload systemd daemon
+        - Reload static routes
+
+    - name: Enable and start the unit
+      ansible.builtin.systemd:
+        name: homelab-static-routes
+        enabled: true
+        state: started
+      when: not ansible_check_mode or static_routes_unit_file.stat.exists
+
+    # A changed script or unit re-syncs the routes (add/replace first, then drop stale ones).
+    - name: Apply pending route changes now
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify the routes are installed
+      ansible.builtin.import_tasks: verify.yml
+      when: not ansible_check_mode

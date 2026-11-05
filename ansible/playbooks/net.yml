@@ -1,0 +1,25 @@
+---
+- name: Net | routes, Pi-hole and Tailscale
+  hosts: net
+  become: true
+  gather_facts: false
+  # DNS resolver and subnet router: never change more than one at a time.
+  serial: 1
+  pre_tasks:
+    # tags: [always] - without it `--tags tailscale` skips these tasks and the
+    # roles then fail on missing facts (gather_facts is off).
+    - name: Wait for the guest (pve.yml may have just restarted it)
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+      tags: [always]
+
+    - name: Gather facts
+      ansible.builtin.setup:
+      tags: [always]
+  roles:
+    - role: static_routes
+      tags: [static_routes]
+    - role: pihole
+      tags: [pihole]
+    - role: tailscale
+      tags: [tailscale]

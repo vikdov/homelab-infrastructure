@@ -1,0 +1,53 @@
+---
+argument_specs:
+  main:
+    short_description: Install and connect Tailscale (subnet router)
+    options:
+      tailscale_repo_distro:
+        type: str
+        description: Repository distro path, debian or ubuntu (derived from facts by default).
+      tailscale_repo_codename:
+        type: str
+        description: Repository suite (derived from facts by default).
+      tailscale_hostname:
+        type: str
+        description: Node name in the tailnet (defaults to the inventory hostname).
+      tailscale_version:
+        type: str
+        default: ""
+        description: Exact package version to pin; empty means "install once, never upgrade".
+      tailscale_signing_key_checksum:
+        type: str
+        default: ""
+        description: Optional "sha256:<hex>" checksum of the apt signing key.
+      tailscale_authkey:
+        type: str
+        default: ""
+        no_log: true
+        description: Auth key, only needed while the node is not logged in.
+      tailscale_authkey_file:
+        type: path
+        default: /run/tailscale/authkey
+        description: Temporary file (tmpfs) the auth key is staged in for the login.
+      tailscale_advertise_routes:
+        type: list
+        elements: str
+        default: []
+        description: IPv4 CIDRs to advertise. Non-empty enables IPv4 forwarding.
+      tailscale_accept_dns:
+        type: bool
+        default: false
+        description: Let tailscaled manage DNS settings.
+      tailscale_accept_routes:
+        type: bool
+        default: false
+        description: Accept routes advertised by other nodes.
+      tailscale_login_states:
+        type: list
+        elements: str
+        default: [NeedsLogin, NoState, Unknown]
+        description: Backend states in which an auth key is required.
+      tailscale_up_timeout:
+        type: str
+        default: 60s
+        description: How long `tailscale up` may wait for the Running state.

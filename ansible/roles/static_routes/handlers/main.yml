@@ -1,0 +1,11 @@
+---
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# Re-sync the routes without flushing them first (no gap for routed traffic).
+- name: Reload static routes
+  ansible.builtin.systemd:
+    name: homelab-static-routes
+    state: reloaded
+  when: not ansible_check_mode or static_routes_unit_file.stat.exists

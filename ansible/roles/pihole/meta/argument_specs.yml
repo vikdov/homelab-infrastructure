@@ -1,0 +1,33 @@
+---
+argument_specs:
+  main:
+    short_description: Install and configure Pi-hole v6.
+    options:
+      pihole_web_password:
+        type: str
+        required: true
+        no_log: true
+        description: Web/API password (use the vault).
+      pihole_web_password_min_length: { type: int, default: 12 }
+      pihole_installer_ref: { type: str, default: "" }
+      pihole_installer_checksum: { type: str, default: "" }
+      pihole_installer_allow_unpinned: { type: bool, default: false }
+      pihole_installer_url: { type: str }
+      pihole_interface: { type: str }
+      pihole_domain: { type: str, default: home.arpa }
+      pihole_upstreams:
+        { type: list, elements: str, default: [9.9.9.9, 149.112.112.112] }
+      pihole_listening_mode:
+        type: str
+        default: LOCAL
+        choices: [LOCAL, SINGLE, BIND, ALL, NONE]
+      pihole_web_port: { type: int, default: 80 }
+      pihole_wait_ports: { type: list, elements: int }
+      pihole_firewall_ack: { type: bool, default: false }
+      pihole_manage_inventory_records: { type: bool, default: true }
+      pihole_inventory_groups: { type: list, elements: str, default: [] }
+      pihole_extra_records: { type: list, elements: str, default: [] }
+      pihole_settings: { type: dict }
+      pihole_extra_settings: { type: dict, default: {} }
+      pihole_state_dir: { type: path, default: /var/lib/ansible-pihole }
+      __pihole_norm_re: { type: str }

@@ -1,0 +1,31 @@
+---
+argument_specs:
+  main:
+    short_description: Manage IPv4 static routes through a systemd unit
+    options:
+      static_routes_list:
+        type: list
+        elements: dict
+        default: []
+        description: Routes to install. An empty list removes the unit and the routes.
+        options:
+          to:
+            type: str
+            required: true
+            description: Destination IPv4 CIDR.
+          via:
+            type: str
+            required: true
+            description: Gateway IPv4 address.
+          dev:
+            type: str
+            required: true
+            description: Outgoing interface.
+      static_routes_proto:
+        type: int
+        default: 201
+        description: Routing protocol number (1-255) that marks routes owned by this role.
+      static_routes_retries:
+        type: int
+        default: 30
+        description: Seconds to keep retrying each route when the interface or gateway is not up yet.

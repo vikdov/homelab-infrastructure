@@ -1,0 +1,70 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    pihole_verify__web_password: molecule-test-password # must match converge.yml
+  tasks:
+    - name: Pi-hole FTL service is enabled and active
+      ansible.builtin.systemd:
+        name: pihole-FTL
+      register: pihole_verify__svc
+      failed_when: >-
+        pihole_verify__svc.status.ActiveState != 'active'
+        or pihole_verify__svc.status.UnitFileState != 'enabled'
+
+    - name: Read managed settings
+      ansible.builtin.command: "pihole-FTL --config {{ item }}"
+      loop:
+        - dns.listeningMode
+        - dns.upstreams
+        - dns.domain.name
+        - dns.dnssec
+        - dns.hosts
+      register: pihole_verify__cfg
+      changed_when: false
+
+    - name: Assert managed settings
+      ansible.builtin.assert:
+        that:
+          - pihole_verify__cfg.results[0].stdout | trim == 'ALL'
+          - "'9.9.9.9' in pihole_verify__cfg.results[1].stdout"
+          - "'149.112.112.112' in pihole_verify__cfg.results[1].stdout"
+          - "'home.arpa' in pihole_verify__cfg.results[2].stdout"
+          - pihole_verify__cfg.results[3].stdout | trim == 'true'
+          - "'pve.home.arpa' in pihole_verify__cfg.results[4].stdout"
+
+    - name: Resolve through Pi-hole
+      ansible.builtin.command: dig +short @127.0.0.1 example.com
+      register: pihole_verify__dig
+      changed_when: false
+      failed_when: pihole_verify__dig.stdout | length == 0
+
+    - name: Resolve the local record
+      ansible.builtin.command: dig +short @127.0.0.1 pve.home.arpa
+      register: pihole_verify__dig_local
+      changed_when: false
+      failed_when: pihole_verify__dig_local.stdout | trim != '192.168.1.254'
+
+    - name: Correct web password is accepted
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/auth
+        method: POST
+        body_format: json
+        body: { password: "{{ pihole_verify__web_password }}" }
+        status_code: [200, 401]
+      register: pihole_verify__auth_ok
+      failed_when: not (pihole_verify__auth_ok.json.session.valid | default(false))
+      no_log: true
+
+    - name: Wrong web password is rejected
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/auth
+        method: POST
+        body_format: json
+        body: { password: "definitely-not-the-password" }
+        status_code: [200, 401]
+      register: pihole_verify__auth_bad
+      failed_when: pihole_verify__auth_bad.json.session.valid | default(false)
+      no_log: true

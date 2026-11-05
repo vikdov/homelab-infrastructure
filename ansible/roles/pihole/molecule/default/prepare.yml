@@ -1,0 +1,10 @@
+---
+- name: Prepare
+  hosts: all
+  become: true
+  tasks:
+    - name: Install test tools (dig)
+      ansible.builtin.apt:
+        name: dnsutils
+        state: present
+        update_cache: true

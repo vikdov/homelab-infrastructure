@@ -1,0 +1,25 @@
+---
+- name: Read the routes owned by this role
+  ansible.builtin.command:
+    argv: [ip, -4, -o, route, show, proto, "{{ static_routes_proto | int }}"]
+  register: static_routes_active
+  changed_when: false
+  check_mode: false
+
+# `ip route show` prints /32 routes without the prefix length.
+- name: Assert every configured route is installed
+  ansible.builtin.assert:
+    that:
+      - >-
+        static_routes_active.stdout_lines
+        | select('search', '^' ~ _dst ~ ' via ' ~ _via ~ ' dev ' ~ _dev ~ '( |$)')
+        | list | length == 1
+    fail_msg: "Route {{ item }} is not active (found: {{ static_routes_active.stdout_lines }})."
+    quiet: true
+  vars:
+    _dst: "{{ item.to | regex_replace('/32$', '') | regex_escape }}"
+    _via: "{{ item.via | regex_escape }}"
+    _dev: "{{ item.dev | regex_escape }}"
+  loop: "{{ static_routes_list }}"
+  loop_control:
+    label: "{{ item.to }}"

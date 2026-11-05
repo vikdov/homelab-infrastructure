@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  role_name: pihole
+  author: vikdov
+  description: Installs and configures Pi-hole v6 declaratively and idempotently.
+  license: MIT
+  min_ansible_version: "2.21.5"
+  platforms:
+    - name: Debian
+      versions: [bookworm, trixie]
+dependencies: []
