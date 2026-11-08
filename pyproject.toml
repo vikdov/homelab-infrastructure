@@ -11,9 +11,12 @@ requires-python = ">=3.14"
 # are installed from ansible/requirements.yml by `mise run setup`.
 dependencies = [
   "ansible-core>=2.21.5",
+  "molecule>=26.10.0",
+  "molecule-plugins[docker]>=26.11.0",
   "proxmoxer>=2.3.0",
   "pyyaml>=6.0.3",
   "requests>=2.34.2",
+  "yamllint>=1.38.0",
 ]
 
 # Dev tooling lives in the same resolved environment as ansible-core, so the

@@ -1,0 +1,78 @@
+---
+- name: Verify | state after converge
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    pbs_verify__expect_fp: "{{ pbs_sync_remote_fingerprint }}"
+  tasks:
+    - name: Read the stub state
+      ansible.builtin.slurp:
+        src: /var/lib/pbs-stub/state.json
+      register: pbs_verify__raw
+
+    - name: Parse it
+      ansible.builtin.set_fact:
+        pbs_verify__s: "{{ pbs_verify__raw.content | b64decode | from_json }}"
+
+    - name: Datastore, jobs and sync are configured
+      ansible.builtin.assert:
+        that:
+          - pbs_verify__s.datastores.main.path == '/srv/pbs/main'
+          - pbs_verify__s.datastores.main['gc-schedule'] == 'sat 05:00'
+          - pbs_verify__s['prune-job']['main-prune']['keep-daily'] == 7
+          - pbs_verify__s['prune-job']['main-prune']['keep-weekly'] == 4
+          - pbs_verify__s['prune-job']['main-prune']['keep-monthly'] == 6
+          - pbs_verify__s['verify-job'] | length == 1
+          - pbs_verify__s['sync-job']['main-offsite']['sync-direction'] == 'push'
+          - pbs_verify__s['sync-job']['main-offsite']['remove-vanished'] == false
+          - pbs_verify__s.remote.offsite.fingerprint == pbs_verify__expect_fp
+          - pbs_verify__s.smtp['homelab-mail'].server == 'smtp.example.net'
+          - pbs_verify__s.matcher['homelab-errors'].target == ['homelab-mail']
+        quiet: true
+
+    - name: PVE user and token get DatastoreBackup only, never a prune/modify role
+      vars:
+        _pbs_ug: "pve-backup@pbs"
+        _pbs_tok: "{{ _pbs_ug }}!pve"
+        _priv_roles: ["DatastorePowerUser", "DatastoreAdmin", "Admin"]
+      ansible.builtin.assert:
+        that:
+          - (pbs_verify__s.acl | selectattr('ugid', 'equalto', _pbs_tok)
+            | map(attribute='roleid') | list) == ['DatastoreBackup']
+          - (pbs_verify__s.acl | selectattr('ugid', 'equalto', _pbs_ug)
+            | map(attribute='roleid') | list) == ['DatastoreBackup']
+          - (pbs_verify__s.acl | selectattr('roleid', 'in', _priv_roles)
+            | map(attribute='ugid') | list) == ['admin@pbs']
+        quiet: true
+
+    - name: Token secret file is root-only
+      ansible.builtin.stat:
+        path: /root/pbs-pve-token
+      register: pbs_verify__tok
+
+    - name: Check the token file
+      ansible.builtin.assert:
+        that:
+          - pbs_verify__tok.stat.exists
+          - pbs_verify__tok.stat.mode == '0600'
+          - pbs_verify__tok.stat.pw_name == 'root'
+        quiet: true
+
+    - name: Failure path | the mount guard stops the role when the datastore is not on a mount
+      block:
+        - name: Run the role with the guard on
+          ansible.builtin.include_role:
+            name: pbs
+            apply:
+              tags: [pbs_config]
+          vars:
+            pbs_datastore_require_mount: true
+        - name: Must not get here
+          ansible.builtin.fail:
+            msg: Role passed although the datastore path is not a mount point.
+      rescue:
+        - name: Check that it failed for the right reason
+          ansible.builtin.assert:
+            that: "'not a mount point' in ansible_failed_result.msg"
+            quiet: true

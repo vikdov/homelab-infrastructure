@@ -1,0 +1,26 @@
+---
+# ---- datastore ----
+# The datastore must sit on its own mount (LXC mount point at /srv/pbs). Set false only for a
+# scratch guest, never for real backups: the container's root disk is lost with the container.
+pbs_datastore_require_mount: false
+
+# ---- UI admin ----
+pbs_admin_password: "{{ vault_pbs_admin_password }}"
+
+# ---- off-box push sync ----
+pbs_sync_enabled: false
+pbs_sync_remote_host: "{{ vault_pbs_sync_remote_host }}" # host:8007
+pbs_sync_remote_auth_id: "{{ vault_pbs_sync_remote_auth_id }}" # user@pbs!token, DatastoreBackup only
+pbs_sync_remote_password: "{{ vault_pbs_sync_remote_password }}"
+pbs_sync_remote_fingerprint: "{{ vault_pbs_sync_remote_fingerprint }}"
+pbs_sync_remote_datastore: "{{ vault_pbs_sync_remote_datastore }}"
+
+# ---- failure notifications (SMTP) ----
+pbs_notify_enabled: false
+pbs_notify_smtp_server: "{{ vault_pbs_smtp_server }}"
+pbs_notify_smtp_port: 587 # 465 for implicit TLS (then set mode: tls)
+pbs_notify_smtp_mode: starttls # insecure | starttls | tls
+pbs_notify_smtp_username: "{{ vault_pbs_smtp_username }}"
+pbs_notify_smtp_password: "{{ vault_pbs_smtp_password }}"
+pbs_notify_from_address: "{{ vault_pbs_notify_from_address }}"
+pbs_notify_mailto: "{{ vault_pbs_notify_mailto }}"

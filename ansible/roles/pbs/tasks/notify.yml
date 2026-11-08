@@ -1,0 +1,127 @@
+---
+# Failure mail for GC, prune, verify and sync jobs through the PBS notification system:
+# one SMTP endpoint plus one matcher that routes the chosen severity to it.
+# Option names are checked against --help first (as in sync.yml) so a CLI change stops the run
+# with a clear message. A changed SMTP password is not detected (the CLI cannot read it back);
+# rotate it by deleting the endpoint once.
+
+- name: Check the notification settings
+  ansible.builtin.assert:
+    that:
+      - pbs_notify_smtp_server | length > 0
+      - pbs_notify_from_address | length > 0
+      - pbs_notify_mailto | length > 0
+      - pbs_notify_smtp_mode in ['insecure', 'starttls', 'tls']
+      - pbs_notify_smtp_username | length == 0 or pbs_notify_smtp_password | length > 0
+    fail_msg: >-
+      pbs_notify_enabled needs pbs_notify_smtp_server, pbs_notify_from_address and pbs_notify_mailto,
+      a valid pbs_notify_smtp_mode, and a password whenever a username is set.
+    quiet: true
+
+- name: Read the CLI help for SMTP endpoints and matchers
+  ansible.builtin.command:
+    argv: "{{ ['proxmox-backup-manager', 'notification'] + item + ['create', '--help'] }}"
+  loop:
+    - [endpoint, smtp]
+    - [matcher]
+  register: pbs_notify_help
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check that this PBS version has the options the role uses
+  ansible.builtin.assert:
+    that:
+      - "'from-address' in (pbs_notify_help.results[0].stdout ~ pbs_notify_help.results[0].stderr)"
+      - "'mailto' in (pbs_notify_help.results[0].stdout ~ pbs_notify_help.results[0].stderr)"
+      - "'match-severity' in (pbs_notify_help.results[1].stdout ~ pbs_notify_help.results[1].stderr)"
+      - "'target' in (pbs_notify_help.results[1].stdout ~ pbs_notify_help.results[1].stderr)"
+    fail_msg: >-
+      `proxmox-backup-manager notification ... create --help` does not list the expected options
+      (from-address, mailto, match-severity, target). Check the installed PBS version.
+    quiet: true
+
+- name: List SMTP endpoints and matchers
+  ansible.builtin.command:
+    argv: "{{ ['proxmox-backup-manager', 'notification'] + item + ['list', '--output-format', 'json'] }}"
+  loop:
+    - [endpoint, smtp]
+    - [matcher]
+  register: pbs_notify_lists
+  changed_when: false
+  check_mode: false
+
+- name: Current endpoint and matcher
+  ansible.builtin.set_fact:
+    pbs_endpoint_current: >-
+      {{ pbs_notify_lists.results[0].stdout | from_json
+         | selectattr('name', 'equalto', pbs_notify_endpoint_name) | list | first | default({}) }}
+    pbs_matcher_current: >-
+      {{ pbs_notify_lists.results[1].stdout | from_json
+         | selectattr('name', 'equalto', pbs_notify_matcher_name) | list | first | default({}) }}
+
+- name: Create the SMTP endpoint
+  ansible.builtin.command:
+    argv: >-
+      {{ ['proxmox-backup-manager', 'notification', 'endpoint', 'smtp', 'create', pbs_notify_endpoint_name,
+          '--server', pbs_notify_smtp_server, '--port', pbs_notify_smtp_port | string,
+          '--mode', pbs_notify_smtp_mode, '--from-address', pbs_notify_from_address,
+          '--mailto', pbs_notify_mailto]
+         + (['--username', pbs_notify_smtp_username, '--password', pbs_notify_smtp_password]
+            if pbs_notify_smtp_username | length > 0 else []) }}
+  when: pbs_endpoint_current | length == 0
+  changed_when: true
+  no_log: true # the password is in the arguments
+
+- name: Update the SMTP endpoint when it differs
+  ansible.builtin.command:
+    argv: >-
+      {{ ['proxmox-backup-manager', 'notification', 'endpoint', 'smtp', 'update', pbs_notify_endpoint_name,
+          '--server', pbs_notify_smtp_server, '--port', pbs_notify_smtp_port | string,
+          '--mode', pbs_notify_smtp_mode, '--from-address', pbs_notify_from_address,
+          '--mailto', pbs_notify_mailto]
+         + (['--username', pbs_notify_smtp_username] if pbs_notify_smtp_username | length > 0 else []) }}
+  when:
+    - pbs_endpoint_current | length > 0
+    - >-
+      (pbs_endpoint_current.server | default('')) != pbs_notify_smtp_server
+      or (pbs_endpoint_current.port | default(0) | int) != (pbs_notify_smtp_port | int)
+      or (pbs_endpoint_current.mode | default('')) != pbs_notify_smtp_mode
+      or (pbs_endpoint_current['from-address'] | default('')) != pbs_notify_from_address
+      or ([pbs_endpoint_current.mailto | default([])] | flatten) != [pbs_notify_mailto]
+      or (pbs_endpoint_current.username | default('')) != pbs_notify_smtp_username
+  changed_when: true
+
+- name: Create the matcher that sends failures to the endpoint
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - notification
+      - matcher
+      - create
+      - "{{ pbs_notify_matcher_name }}"
+      - --target
+      - "{{ pbs_notify_endpoint_name }}"
+      - --match-severity
+      - "{{ pbs_notify_severity }}"
+  when: pbs_matcher_current | length == 0
+  changed_when: true
+
+- name: Update the matcher when it differs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - notification
+      - matcher
+      - update
+      - "{{ pbs_notify_matcher_name }}"
+      - --target
+      - "{{ pbs_notify_endpoint_name }}"
+      - --match-severity
+      - "{{ pbs_notify_severity }}"
+  when:
+    - pbs_matcher_current | length > 0
+    - >-
+      ([pbs_matcher_current.target | default([])] | flatten) != [pbs_notify_endpoint_name]
+      or ([pbs_matcher_current['match-severity'] | default([])] | flatten) != [pbs_notify_severity]
+  changed_when: true

@@ -1,0 +1,48 @@
+---
+# Tests the role's Ansible logic against a stateful fake of proxmox-backup-manager (files/).
+# Covers: first converge, idempotence (second run changed=0), ACL drift, rebuild with existing data,
+# lost token secret, mount guard. It does NOT run real PBS: see README, "Testing".
+driver:
+  name: docker
+platforms:
+  - name: pbs-stub
+    image: docker.io/library/debian:trixie
+    pre_build_image: false
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  options:
+    skip-tags: pbs_install # package/repo install needs real PBS: covered by the scratch-guest test
+  config_options:
+    defaults:
+      callbacks_enabled: ansible.posix.profile_tasks
+  inventory:
+    host_vars:
+      pbs-stub:
+        pbs_datastore_require_mount: false # a container has no separate mount; guard tested in verify
+        pbs_admin_password: molecule-admin-pass
+        pbs_sync_enabled: true
+        pbs_sync_remote_host: offsite.example.net:8007
+        pbs_sync_remote_auth_id: push-main@pbs!main
+        pbs_sync_remote_password: molecule-remote-pass
+        pbs_sync_remote_fingerprint:
+          "AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:\
+          AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB"
+        pbs_sync_remote_datastore: offsite
+        pbs_notify_enabled: true
+        pbs_notify_smtp_server: smtp.example.net
+        pbs_notify_smtp_username: pbs@example.net
+        pbs_notify_smtp_password: molecule-smtp-pass
+        pbs_notify_from_address: pbs@example.net
+        pbs_notify_mailto: you@example.net
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

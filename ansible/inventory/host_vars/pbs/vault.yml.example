@@ -1,0 +1,21 @@
+---
+# Copy to vault.yml, fill in, then encrypt:
+#   ansible-vault encrypt ansible/inventory/host_vars/pbs/vault.yml
+
+# Local PBS web UI admin (min. 12 characters)
+vault_pbs_admin_password: "change-me-to-a-long-random-password"
+
+# Offsite PBS (push target). The token needs DatastoreBackup on that datastore only.
+vault_pbs_sync_remote_host: "offsite-pbs.example.net:8007"
+vault_pbs_sync_remote_auth_id: "push-main@pbs!main"
+vault_pbs_sync_remote_password: "token-secret-from-the-offsite-pbs"
+# on the offsite PBS: proxmox-backup-manager cert info
+vault_pbs_sync_remote_fingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+vault_pbs_sync_remote_datastore: "offsite"
+
+# SMTP for failure mail
+vault_pbs_smtp_server: "smtp.example.net"
+vault_pbs_smtp_username: "pbs@example.net"
+vault_pbs_smtp_password: "smtp-password"
+vault_pbs_notify_from_address: "pbs@example.net"
+vault_pbs_notify_mailto: "you@example.net"
