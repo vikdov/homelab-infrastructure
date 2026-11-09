@@ -9,6 +9,7 @@ resource "proxmox_virtual_environment_vm" "this" {
   tags        = sort(var.tags)
   started     = var.started
   on_boot     = var.on_boot
+  protection  = var.protection
 
   # 1. DYNAMIC CLONE: Only rendered if var.template_vm_id is provided (not null)
   dynamic "clone" {
@@ -110,4 +111,5 @@ resource "proxmox_virtual_environment_vm" "this" {
       keys     = var.ssh_public_keys
     }
   }
+  lifecycle { ignore_changes = [disk[0].import_from] }
 }

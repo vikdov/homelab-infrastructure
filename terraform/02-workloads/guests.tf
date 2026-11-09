@@ -133,6 +133,8 @@ module "lxc" {
   tags             = concat(["iac"], each.value.tags)
   started          = each.value.started
   on_boot          = each.value.on_boot
+
+  depends_on = [terraform_data.guest_checks]
 }
 
 module "vm" {
@@ -158,7 +160,10 @@ module "vm" {
     each.value.vendor_data_file_id,
     local.default_vendor_data_id
   )
-  tags    = concat(["iac"], each.value.tags)
-  started = each.value.started
-  on_boot = each.value.on_boot
+  tags       = concat(["iac"], each.value.tags)
+  started    = each.value.started
+  on_boot    = each.value.on_boot
+  protection = each.value.protection
+
+  depends_on = [terraform_data.guest_checks]
 }

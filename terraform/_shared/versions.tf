@@ -18,8 +18,8 @@ terraform {
     proxmox = {
       source = "bpg/proxmox"
 
-      # Allow 0.114.x releases, but not 0.115 or newer.
-      version = "~> 0.114.0"
+      # Allow 0.120.x releases, but not 0.121.x or newer.
+      version = "~> 0.120.0"
     }
     local = {
       source  = "hashicorp/local"

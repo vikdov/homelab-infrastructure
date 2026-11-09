@@ -233,6 +233,15 @@ resource "proxmox_virtual_environment_firewall_rules" "host" {
     source  = join(",", local.sources[var.monitoring_guest])
   }
 
+  rule {
+    type    = "in"
+    action  = "ACCEPT"
+    comment = "node_exporter from monitoring"
+    proto   = "tcp"
+    dport   = "9100"
+    source  = join(",", local.sources[var.monitoring_guest])
+  }
+
   depends_on = [terraform_data.firewall_checks]
 }
 
