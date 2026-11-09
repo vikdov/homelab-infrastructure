@@ -1,0 +1,409 @@
+---
+# Scope: this file creates and updates the objects it manages (datastore, PVE user and token,
+# optional UI admin, ACLs, prune/verify jobs). It never deletes users, datastores, jobs or ACLs,
+# and it cannot detect a changed password (PBS never shows one). To rotate a password or remove
+# an object, use proxmox-backup-manager or the UI once.
+
+# Read-only commands carry check_mode: false so --check works. Settings are read first and written
+# only when they differ, so `changed` means something changed.
+
+# ---- datastore ----
+- name: Check the datastore mount point
+  ansible.builtin.command:
+    argv: [mountpoint, -q, "{{ pbs_datastore_mountpoint }}"]
+  register: pbs_mount
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: pbs_datastore_require_mount | bool
+
+- name: Require a dedicated datastore mount
+  ansible.builtin.assert:
+    that: pbs_mount.rc == 0
+    fail_msg: >-
+      {{ pbs_datastore_mountpoint }} is not a mount point, so the datastore would live on the
+      container's root disk and be lost with it. Add the mount point to the LXC, or set
+      pbs_datastore_require_mount: false if you accept that.
+    quiet: true
+  when: pbs_datastore_require_mount | bool
+
+- name: Warn that the datastore may share the root disk
+  ansible.builtin.debug:
+    msg: >-
+      pbs_datastore_require_mount is false: {{ pbs_datastore_path }} may be on the root filesystem.
+      Backups would be lost with the container and could fill the root disk.
+  when: not (pbs_datastore_require_mount | bool)
+
+- name: Datastore directory
+  # Owner and group 'backup' are built-in system accounts created automatically
+  # by the proxmox-backup-server package installation.
+  ansible.builtin.file:
+    path: "{{ pbs_datastore_path }}"
+    state: directory
+    owner: backup
+    group: backup
+    mode: "0750"
+
+# A path that already holds PBS data (rebuilt guest, moved disk) must be re-adopted, not re-created.
+- name: Look for an existing datastore on the path
+  ansible.builtin.stat:
+    path: "{{ pbs_datastore_path }}/.chunks"
+  register: pbs_chunks
+
+- name: List datastores
+  ansible.builtin.command:
+    argv: [proxmox-backup-manager, datastore, list, --output-format, json]
+  register: pbs_ds
+  changed_when: false
+  check_mode: false
+
+- name: Create datastore (re-adopts existing data when the path already holds a datastore)
+  ansible.builtin.command:
+    argv: >-
+      {{ ['proxmox-backup-manager', 'datastore', 'create', pbs_datastore_name, pbs_datastore_path]
+         + (['--reuse-datastore', 'true'] if pbs_chunks.stat.exists else []) }}
+  when: pbs_datastore_name not in (pbs_ds.stdout | from_json | map(attribute='name') | list)
+  changed_when: true
+
+- name: Garbage-collection schedule
+  ansible.builtin.command:
+    argv:
+      [
+        proxmox-backup-manager,
+        datastore,
+        update,
+        "{{ pbs_datastore_name }}",
+        --gc-schedule,
+        "{{ pbs_gc_schedule }}",
+      ]
+  vars:
+    _cur: >-
+      {{ pbs_ds.stdout | from_json | selectattr('name', 'equalto', pbs_datastore_name)
+         | map(attribute='gc-schedule') | first | default('') }}
+  when: _cur != pbs_gc_schedule
+  changed_when: true
+
+# ---- users and token for PVE (cannot prune or delete: DatastoreBackup only) ----
+- name: List users
+  ansible.builtin.command:
+    argv: [proxmox-backup-manager, user, list, --output-format, json]
+  register: pbs_users
+  changed_when: false
+  check_mode: false
+
+- name: Create the PVE backup user
+  ansible.builtin.command:
+    argv:
+      [
+        proxmox-backup-manager,
+        user,
+        create,
+        "{{ pbs_pve_user }}",
+        --comment,
+        "PVE vzdump (Terraform stage 03)",
+      ]
+  when: pbs_pve_user not in (pbs_users.stdout | from_json | map(attribute='userid') | list)
+  changed_when: true
+
+# The user may not exist yet under --check, so a failing list means "no tokens".
+- name: List tokens
+  ansible.builtin.command:
+    argv:
+      [
+        proxmox-backup-manager,
+        user,
+        list-tokens,
+        "{{ pbs_pve_user }}",
+        --output-format,
+        json,
+      ]
+  register: pbs_tokens
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Work out the token state
+  ansible.builtin.set_fact:
+    pbs_token_exists: >-
+      {{ (pbs_pve_user ~ '!' ~ pbs_pve_token_name)
+         in ((pbs_tokens.stdout | from_json if pbs_tokens.rc == 0 else []) | map(attribute='tokenid') | list) }}
+
+- name: Look for the saved token secret
+  ansible.builtin.stat:
+    path: "{{ pbs_token_file }}"
+  register: pbs_token_stat
+
+# The secret is shown only once, so a token without a saved secret needs an explicit decision.
+- name: Stop when the token exists but its secret was never saved
+  ansible.builtin.assert:
+    that: not (pbs_token_exists | bool) or pbs_token_stat.stat.exists or (pbs_token_regenerate | bool)
+    fail_msg: >-
+      Token {{ pbs_pve_user }}!{{ pbs_pve_token_name }} exists but {{ pbs_token_file }} is missing.
+      Rerun once with -e pbs_token_regenerate=true to replace it (the old secret stops working).
+    quiet: true
+
+- name: Delete the token for regeneration
+  ansible.builtin.command:
+    argv:
+      [
+        proxmox-backup-manager,
+        user,
+        delete-token,
+        "{{ pbs_pve_user }}",
+        "{{ pbs_pve_token_name }}",
+      ]
+  when: (pbs_token_exists | bool) and (pbs_token_regenerate | bool)
+  changed_when: true
+
+- name: Generate the token (the secret is shown once)
+  ansible.builtin.command:
+    argv:
+      [
+        proxmox-backup-manager,
+        user,
+        generate-token,
+        "{{ pbs_pve_user }}",
+        "{{ pbs_pve_token_name }}",
+      ]
+  register: pbs_token_new
+  when: (not (pbs_token_exists | bool)) or (pbs_token_regenerate | bool)
+  changed_when: true
+  no_log: true
+
+- name: Extract the token secret
+  ansible.builtin.set_fact:
+    pbs_token_secret: "{{ pbs_token_new.stdout | regex_findall(_re) | first | default('') }}"
+  vars:
+    _re: '"value"\s*:\s*"([^"]+)"'
+  when: pbs_token_new is not skipped
+  no_log: true
+
+# No no_log: the condition does not contain the secret, and no_log would hide fail_msg.
+- name: Check that the secret was found
+  ansible.builtin.assert:
+    that: pbs_token_secret | length > 0
+    fail_msg: >-
+      The token was created but no secret was found in the command output. Rerun with
+      -e pbs_token_regenerate=true to replace it.
+    quiet: true
+  when: pbs_token_new is not skipped
+
+- name: Save the secret (root-only file on this guest)
+  ansible.builtin.copy:
+    dest: "{{ pbs_token_file }}"
+    content: "{{ pbs_token_secret }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: pbs_token_new is not skipped
+  no_log: true
+
+# `acl update` is an upsert, so the ACL list is read first and a grant is made only when missing.
+# That keeps `changed` honest and makes a manually removed ACL visible.
+- name: Read current ACLs
+  ansible.builtin.command:
+    argv: [proxmox-backup-manager, acl, list, --output-format, json]
+  register: pbs_acl
+  changed_when: false
+  check_mode: false
+
+- name: Grant DatastoreBackup on this datastore (user and token)
+  ansible.builtin.command:
+    argv:
+      [
+        proxmox-backup-manager,
+        acl,
+        update,
+        "/datastore/{{ pbs_datastore_name }}",
+        DatastoreBackup,
+        --auth-id,
+        "{{ item }}",
+      ]
+  loop:
+    - "{{ pbs_pve_user }}"
+    - "{{ pbs_pve_user }}!{{ pbs_pve_token_name }}"
+  when: >-
+    (pbs_acl.stdout | from_json
+     | selectattr('path', 'equalto', '/datastore/' ~ pbs_datastore_name)
+     | selectattr('ugid', 'equalto', item)
+     | selectattr('roleid', 'equalto', 'DatastoreBackup') | list | length) == 0
+  changed_when: true
+
+- name: Keep the token file private
+  ansible.builtin.file:
+    path: "{{ pbs_token_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: pbs_token_stat.stat.exists and pbs_token_new is skipped
+
+# ---- UI admin (password is applied only when the user is created) ----
+- name: UI admin user
+  when: pbs_admin_password | length > 0
+  block:
+    - name: Check the admin password length
+      ansible.builtin.assert:
+        that: pbs_admin_password | length >= 12
+        fail_msg: pbs_admin_password (vault_pbs_admin_password) must be at least 12 characters.
+        quiet: true
+
+    # The password is briefly visible in this command's arguments (proxmox-backup-manager has no stdin option).
+    - name: Create the admin user when missing
+      ansible.builtin.command:
+        argv:
+          [
+            proxmox-backup-manager,
+            user,
+            create,
+            "{{ pbs_admin_user }}",
+            --password,
+            "{{ pbs_admin_password }}",
+          ]
+      when: pbs_admin_user not in (pbs_users.stdout | from_json | map(attribute='userid') | list)
+      changed_when: true
+      no_log: true
+
+    - name: Admin ACL
+      ansible.builtin.command:
+        argv:
+          [
+            proxmox-backup-manager,
+            acl,
+            update,
+            /,
+            Admin,
+            --auth-id,
+            "{{ pbs_admin_user }}",
+          ]
+      when: >-
+        (pbs_acl.stdout | from_json
+         | selectattr('path', 'equalto', '/')
+         | selectattr('ugid', 'equalto', pbs_admin_user)
+         | selectattr('roleid', 'equalto', 'Admin') | list | length) == 0
+      changed_when: true
+
+# ---- jobs (retention lives here, not on PVE) ----
+- name: List prune and verify jobs
+  ansible.builtin.command:
+    argv:
+      [proxmox-backup-manager, "{{ item }}-job", list, --output-format, json]
+  loop: [prune, verify]
+  register: pbs_jobs
+  changed_when: false
+  check_mode: false
+
+- name: Current prune and verify job settings
+  ansible.builtin.set_fact:
+    pbs_prune_current: >-
+      {{ pbs_jobs.results[0].stdout | from_json
+         | selectattr('id', 'equalto', pbs_datastore_name ~ '-prune') | list | first | default({}) }}
+    pbs_verify_current: >-
+      {{ pbs_jobs.results[1].stdout | from_json
+         | selectattr('id', 'equalto', pbs_datastore_name ~ '-verify') | list | first | default({}) }}
+
+- name: Create the prune job
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - prune-job
+      - create
+      - "{{ pbs_datastore_name }}-prune"
+      - --store
+      - "{{ pbs_datastore_name }}"
+      - --schedule
+      - "{{ pbs_prune_schedule }}"
+      - --keep-daily
+      - "{{ pbs_keep.daily }}"
+      - --keep-weekly
+      - "{{ pbs_keep.weekly }}"
+      - --keep-monthly
+      - "{{ pbs_keep.monthly }}"
+  when: pbs_prune_current | length == 0
+  changed_when: true
+
+- name: Update the prune job when it differs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - prune-job
+      - update
+      - "{{ pbs_datastore_name }}-prune"
+      - --schedule
+      - "{{ pbs_prune_schedule }}"
+      - --keep-daily
+      - "{{ pbs_keep.daily }}"
+      - --keep-weekly
+      - "{{ pbs_keep.weekly }}"
+      - --keep-monthly
+      - "{{ pbs_keep.monthly }}"
+  when:
+    - pbs_prune_current | length > 0
+    - >-
+      (pbs_prune_current.schedule | default('')) != pbs_prune_schedule
+      or (pbs_prune_current['keep-daily'] | default(0) | int) != (pbs_keep.daily | int)
+      or (pbs_prune_current['keep-weekly'] | default(0) | int) != (pbs_keep.weekly | int)
+      or (pbs_prune_current['keep-monthly'] | default(0) | int) != (pbs_keep.monthly | int)
+  changed_when: true
+
+- name: Create the verify job
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - verify-job
+      - create
+      - "{{ pbs_datastore_name }}-verify"
+      - --store
+      - "{{ pbs_datastore_name }}"
+      - --schedule
+      - "{{ pbs_verify_schedule }}"
+      - --ignore-verified
+      - "true"
+      - --outdated-after
+      - "{{ pbs_verify_outdated_after }}"
+  when: pbs_verify_current | length == 0
+  changed_when: true
+
+- name: Update the verify job when it differs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - verify-job
+      - update
+      - "{{ pbs_datastore_name }}-verify"
+      - --schedule
+      - "{{ pbs_verify_schedule }}"
+      - --outdated-after
+      - "{{ pbs_verify_outdated_after }}"
+  when:
+    - pbs_verify_current | length > 0
+    - >-
+      (pbs_verify_current.schedule | default('')) != pbs_verify_schedule
+      or (pbs_verify_current['outdated-after'] | default(0) | int) != (pbs_verify_outdated_after | int)
+  changed_when: true
+
+# ---- values for Terraform stage 03 ----
+- name: Read the certificate fingerprint
+  ansible.builtin.command:
+    argv: [proxmox-backup-manager, cert, info]
+  register: pbs_cert
+  changed_when: false
+  check_mode: false
+
+- name: Extract the certificate fingerprint
+  ansible.builtin.set_fact:
+    pbs_fingerprint: "{{ pbs_cert.stdout | regex_findall(_re) | first | default('') }}"
+  vars:
+    _re: 'Fingerprint \(sha256\):\s*([0-9A-Fa-f:]+)'
+
+- name: Check the fingerprint looks like SHA-256
+  ansible.builtin.assert:
+    that: pbs_fingerprint is match('^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$')
+    fail_msg: Could not read a SHA-256 fingerprint from `proxmox-backup-manager cert info`.
+    quiet: true
+
+- name: Values for stage 03
+  ansible.builtin.debug:
+    msg:
+      - "TF_VAR_pbs_datastore={{ pbs_datastore_name }}"
+      - "TF_VAR_pbs_fingerprint={{ pbs_fingerprint }}"
+      - "TF_VAR_pbs_token_secret: ssh pbs 'sudo cat {{ pbs_token_file }}'"

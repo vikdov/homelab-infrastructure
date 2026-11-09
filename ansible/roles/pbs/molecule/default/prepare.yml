@@ -1,0 +1,19 @@
+---
+- name: Prepare | install the fake proxmox-backup-manager
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install Python and mountpoint
+      ansible.builtin.apt:
+        name: [python3, util-linux]
+        update_cache: true
+      changed_when: false
+
+    - name: Install the stub CLI
+      ansible.builtin.copy:
+        src: proxmox-backup-manager
+        dest: /usr/sbin/proxmox-backup-manager
+        mode: "0755"
+        owner: root
+        group: root

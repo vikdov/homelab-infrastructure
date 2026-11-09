@@ -1,0 +1,176 @@
+---
+# Installs Proxmox Backup Server 4 on stock Debian 13 or on the Proxmox ISO.
+#   pbs_subscription_key empty -> no-subscription repo, enterprise repo disabled.
+#   pbs_subscription_key set   -> key registered on the host, enterprise repo only (keep the key in vault).
+- name: Check platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Debian'
+      - ansible_facts['distribution_release'] == 'trixie'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: This role installs PBS 4 and needs Debian 13 (trixie) with systemd - specific PBS requirements
+    quiet: true
+
+- name: Warn when the keyring is not pinned
+  ansible.builtin.debug:
+    msg: pbs_keyring_checksum is empty, so the Proxmox signing key is trusted on TLS alone.
+  when: pbs_keyring_checksum | length == 0
+
+- name: Check for an existing Proxmox keyring
+  ansible.builtin.stat:
+    path: /usr/share/keyrings/proxmox-archive-keyring.gpg
+  register: pbs_key_stat
+
+# Downloaded (and checksum-verified) only when missing. Once the proxmox-archive-keyring package
+# manages this file its hash can change, so an existing file is never compared or overwritten.
+- name: Proxmox archive keyring
+  ansible.builtin.get_url:
+    url: "{{ pbs_keyring_url }}"
+    dest: /usr/share/keyrings/proxmox-archive-keyring.gpg
+    checksum: "{{ pbs_keyring_checksum | default(omit, true) }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: not pbs_key_stat.stat.exists
+  register: pbs_key
+
+# pbs_installed is set in main.yml (before the install).
+# The subscription key can only be registered with proxmox-backup-manager, which ships in
+# proxmox-backup-server. So a fresh host must install from the no-subscription repo first; with a
+# key set that repo is only a bootstrap source and is removed again once the subscription is active.
+- name: PBS no-subscription repository (deb822)
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pbs.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible
+      Types: deb
+      URIs: http://download.proxmox.com/debian/pbs
+      Suites: {{ ansible_facts['distribution_release'] }}
+      Components: pbs-no-subscription
+      Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+  register: pbs_repo
+  when: pbs_subscription_key | length == 0 or not pbs_installed
+
+# Without a subscription the enterprise source answers 401 and breaks every `apt update`.
+# Written before the install even if the file does not exist yet; the install keeps it (force-confold).
+- name: Keep the pbs-enterprise apt source disabled (no subscription)
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pbs-enterprise.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Disabled by Ansible (no subscription)
+      Types: deb
+      URIs: https://enterprise.proxmox.com/debian/pbs
+      Suites: {{ ansible_facts['distribution_release'] }}
+      Components: pbs-enterprise
+      Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+      Enabled: no
+  register: pbs_enterprise_off
+  when: pbs_subscription_key | length == 0
+
+# Not cache_valid_time: a recent apt update from another role would skip reading the new repository.
+- name: Refresh apt after a key or repository change
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: "{{ bootstrap_apt_lock_timeout | default(300) }}"
+  when: pbs_key is changed or pbs_repo is changed or pbs_enterprise_off is changed
+
+- name: Install proxmox-backup-server (server package only, no kernel meta-package)
+  ansible.builtin.apt:
+    name: proxmox-backup-server
+    state: present
+    install_recommends: false
+    dpkg_options: force-confdef,force-confold
+    lock_timeout: "{{ bootstrap_apt_lock_timeout | default(300) }}"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Enable services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [proxmox-backup, proxmox-backup-proxy]
+
+- name: Wait for the API port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 8007
+    timeout: 60
+  when: not ansible_check_mode
+
+- name: Register the subscription and switch to the enterprise repository
+  when:
+    - pbs_subscription_key | length > 0
+    - not ansible_check_mode
+  block:
+    - name: Read the subscription status
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, subscription, get, --output-format, json]
+      register: pbs_sub_before
+      changed_when: false
+      failed_when: false
+
+    # If the status cannot be read, the key is simply registered again (harmless).
+    - name: Register the subscription key
+      ansible.builtin.command:
+        argv:
+          [
+            proxmox-backup-manager,
+            subscription,
+            set,
+            "{{ pbs_subscription_key }}",
+          ]
+      no_log: true
+      changed_when: true
+      when: pbs_sub_before.stdout is not search('"status"\s*:\s*"active"')
+
+    - name: Check the subscription with the Proxmox server
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, subscription, update]
+      changed_when: false
+
+    - name: Read the subscription status again
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, subscription, get, --output-format, json]
+      register: pbs_sub_after
+      changed_when: false
+
+    # Never switch to the enterprise repo with an inactive key: apt would answer 401.
+    - name: Require an active subscription
+      ansible.builtin.assert:
+        that: pbs_sub_after.stdout is search('"status"\s*:\s*"active"')
+        fail_msg: pbs_subscription_key is set but the subscription is not active.
+        quiet: true
+
+    - name: PBS enterprise repository (deb822)
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/pbs-enterprise.sources
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by Ansible
+          Types: deb
+          URIs: https://enterprise.proxmox.com/debian/pbs
+          Suites: {{ ansible_facts['distribution_release'] }}
+          Components: pbs-enterprise
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+      register: pbs_enterprise_on
+
+    - name: Remove the no-subscription repository
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/pbs.sources
+        state: absent
+      register: pbs_repo_removed
+
+    - name: Refresh apt after switching to the enterprise repository
+      ansible.builtin.apt:
+        update_cache: true
+        lock_timeout: "{{ bootstrap_apt_lock_timeout | default(300) }}"
+      when: pbs_enterprise_on is changed or pbs_repo_removed is changed

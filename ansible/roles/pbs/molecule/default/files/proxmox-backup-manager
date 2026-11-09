@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Stateful stand-in for `proxmox-backup-manager`, used only by the Molecule scenario.
+
+It implements just the sub-commands the pbs role calls and keeps its state in a JSON file, so the
+role can be run twice and the second run must report changed=0. It tests the role's Ansible logic
+(conditions, idempotence, secret handling, failure paths). It does NOT prove that the real PBS CLI
+accepts the same flags or returns the same JSON keys: the JSON shapes below are assumptions taken
+from the PBS API documentation. Check them against a real PBS 4 guest (see README, "Testing").
+"""
+import json
+import os
+import sys
+
+STATE = os.environ.get("PBS_STUB_STATE", "/var/lib/pbs-stub/state.json")
+EMPTY = {
+    "datastores": {}, "users": {}, "tokens": {}, "acl": [], "prune-job": {}, "verify-job": {},
+    "remote": {}, "sync-job": {}, "smtp": {}, "matcher": {}, "counter": 0,
+}
+
+HELP = {
+    "remote create": "Usage: proxmox-backup-manager remote create <name> --host <host> "
+                     "--auth-id <auth-id> --password <pw> [--fingerprint <fp>] [--port <port>]",
+    "sync-job create": "Usage: proxmox-backup-manager sync-job create <id> --store <store> "
+                       "--remote-store <s> [--remote <r>] [--sync-direction <pull|push>] "
+                       "[--remove-vanished <bool>] [--schedule <s>]",
+    "notification endpoint smtp create": "Usage: proxmox-backup-manager notification endpoint smtp "
+                                         "create <name> --server <s> --from-address <a> [--mailto <a>] "
+                                         "[--mode <m>] [--port <p>] [--username <u>] [--password <p>]",
+    "notification matcher create": "Usage: proxmox-backup-manager notification matcher create "
+                                   "<name> [--target <t>] [--match-severity <s>] [--mode <m>]",
+}
+
+
+def load():
+    if os.path.exists(STATE):
+        with open(STATE) as fh:
+            return json.load(fh)
+    return json.loads(json.dumps(EMPTY))
+
+
+def save(state):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE, "w") as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
+
+
+def die(msg, rc=1):
+    print("Error: " + msg, file=sys.stderr)
+    sys.exit(rc)
+
+
+def conv(value):
+    if value in ("true", "false"):
+        return value == "true"
+    if value.isdigit():
+        return int(value)
+    return value
+
+
+def split(args):
+    """Return (positionals, options). Options may repeat: later values win."""
+    pos, opts, i = [], {}, 0
+    while i < len(args):
+        if args[i].startswith("--"):
+            key = args[i][2:]
+            if i + 1 >= len(args):
+                die("option --%s needs a value" % key)
+            opts[key] = args[i + 1]
+            i += 2
+        else:
+            pos.append(args[i])
+            i += 1
+    return pos, opts
+
+
+def out(items, opts):
+    if opts.get("output-format") == "json":
+        print(json.dumps(items))
+    else:
+        for item in items:
+            print(item)
+
+
+def crud(state, table, key_name, pos, opts, verb, aliases=None):
+    """Generic list/create/update for tables keyed by one id."""
+    store = state[table]
+    if verb == "list":
+        out([dict({key_name: k}, **v) for k, v in sorted(store.items())], opts)
+        return
+    if not pos:
+        die("missing id")
+    ident = pos[0]
+    attrs = {k: conv(v) for k, v in opts.items() if k not in ("output-format",)}
+    for secret in ("password",):
+        attrs.pop(secret, None)
+    if "mailto" in attrs:
+        attrs["mailto"] = [attrs["mailto"]]
+    for listed in ("target", "match-severity"):
+        if listed in attrs:
+            attrs[listed] = [attrs[listed]]
+    if verb == "create":
+        if ident in store:
+            die("%s '%s' already exists" % (table, ident))
+        store[ident] = attrs
+    elif verb == "update":
+        if ident not in store:
+            die("%s '%s' does not exist" % (table, ident))
+        store[ident].update(attrs)
+    else:
+        die("unsupported verb %s" % verb)
+
+
+def main(argv):
+    if not argv:
+        die("no command")
+    state = load()
+    joined = " ".join(argv)
+    for key, text in HELP.items():
+        if joined.startswith(key) and "--help" in argv:
+            print(text)
+            return
+
+    if argv[0] == "cert" and argv[1] == "info":
+        print("Subject: CN = pbs.example")
+        print("Fingerprint (sha256): " + ":".join(["AB"] * 32))
+        return
+
+    if argv[0] == "datastore":
+        pos, opts = split(argv[2:])
+        verb = argv[1]
+        if verb == "list":
+            out([{"name": k, "path": v["path"], **({"gc-schedule": v["gc-schedule"]} if "gc-schedule" in v else {})}
+                 for k, v in sorted(state["datastores"].items())], opts)
+        elif verb == "create":
+            name, path = pos
+            if name in state["datastores"]:
+                die("datastore '%s' already exists" % name)
+            chunks = os.path.join(path, ".chunks")
+            if os.path.isdir(chunks) and opts.get("reuse-datastore") != "true":
+                die("unable to create chunk store: .chunks exists (path not empty)")
+            os.makedirs(chunks, exist_ok=True)
+            state["datastores"][name] = {"path": path}
+        elif verb == "update":
+            state["datastores"][pos[0]].update({k: v for k, v in opts.items()})
+        else:
+            die("unsupported datastore verb")
+    elif argv[0] == "user":
+        verb = argv[1]
+        pos, opts = split(argv[2:])
+        if verb == "list":
+            out([{"userid": u} for u in sorted(state["users"])], opts)
+        elif verb == "create":
+            if pos[0] in state["users"]:
+                die("user exists")
+            state["users"][pos[0]] = {}
+        elif verb == "list-tokens":
+            if pos[0] not in state["users"]:
+                die("user '%s' does not exist" % pos[0])
+            out([{"tokenid": t} for t in sorted(state["tokens"]) if t.startswith(pos[0] + "!")], opts)
+        elif verb == "generate-token":
+            tid = pos[0] + "!" + pos[1]
+            if tid in state["tokens"]:
+                die("token exists")
+            state["counter"] += 1
+            state["tokens"][tid] = "secret-%d" % state["counter"]
+            print("Result: {\n  \"tokenid\": \"%s\",\n  \"value\": \"%s\"\n}" % (tid, state["tokens"][tid]))
+        elif verb == "delete-token":
+            tid = pos[0] + "!" + pos[1]
+            state["tokens"].pop(tid, None)
+        else:
+            die("unsupported user verb")
+    elif argv[0] == "acl":
+        verb = argv[1]
+        pos, opts = split(argv[2:])
+        if verb == "list":
+            out(state["acl"], opts)
+        elif verb == "update":
+            path, role = pos
+            ugid = opts["auth-id"]
+            entry = {"path": path, "roleid": role, "ugid": ugid, "propagate": True,
+                     "ugid_type": "token" if "!" in ugid else "user"}
+            if entry not in state["acl"]:
+                state["acl"].append(entry)
+        else:
+            die("unsupported acl verb")
+    elif argv[0] in ("prune-job", "verify-job", "remote", "sync-job"):
+        pos, opts = split(argv[2:])
+        key = "name" if argv[0] == "remote" else "id"
+        crud(state, argv[0], key, pos, opts, argv[1])
+    elif argv[0] == "notification":
+        kind = argv[1]
+        if kind == "endpoint" and argv[2] == "smtp":
+            pos, opts = split(argv[4:])
+            crud(state, "smtp", "name", pos, opts, argv[3])
+        elif kind == "matcher":
+            pos, opts = split(argv[3:])
+            crud(state, "matcher", "name", pos, opts, argv[2])
+        else:
+            die("unsupported notification command")
+    else:
+        die("unsupported command: " + joined)
+    save(state)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

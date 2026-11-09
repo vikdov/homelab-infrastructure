@@ -1,0 +1,140 @@
+---
+# Push sync to an offsite PBS. remove-vanished stays false on purpose: pruning or a compromised main
+# must not be able to delete the offsite copy. The offsite PBS needs its own prune/GC/verify jobs.
+- name: Check sync settings
+  ansible.builtin.assert:
+    that:
+      - pbs_sync_remote_host | length > 0
+      - pbs_sync_remote_auth_id | length > 0
+      - pbs_sync_remote_password | length > 0
+      - pbs_sync_remote_datastore | length > 0
+      - pbs_sync_remote_fingerprint is match('^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$')
+    fail_msg: >-
+      Set pbs_sync_remote_host, _auth_id, _password (vault), _datastore and a SHA-256
+      _fingerprint of the offsite PBS (proxmox-backup-manager cert info on that host).
+    quiet: true
+
+- name: Read the CLI help for remotes and sync jobs
+  ansible.builtin.command:
+    argv: [proxmox-backup-manager, "{{ item }}", create, --help]
+  loop: [remote, sync-job]
+  register: pbs_sync_help
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Stop if this PBS cannot do push sync
+  ansible.builtin.assert:
+    that:
+      - "'sync-direction' in (pbs_sync_help.results[1].stdout ~ pbs_sync_help.results[1].stderr)"
+      - "'remove-vanished' in (pbs_sync_help.results[1].stdout ~ pbs_sync_help.results[1].stderr)"
+      - "'fingerprint' in (pbs_sync_help.results[0].stdout ~ pbs_sync_help.results[0].stderr)"
+    fail_msg: >-
+      'proxmox-backup-manager sync-job create --help' shows no --sync-direction (push sync needs
+      PBS 4) or the remote/sync-job options differ from what this role uses. Compare with the help.
+    quiet: true
+
+- name: List remotes and sync jobs
+  ansible.builtin.command:
+    argv: [proxmox-backup-manager, "{{ item }}", list, --output-format, json]
+  loop: [remote, sync-job]
+  register: pbs_sync_lists
+  changed_when: false
+  check_mode: false
+
+- name: Current remote and sync job
+  ansible.builtin.set_fact:
+    pbs_remote_current: >-
+      {{ pbs_sync_lists.results[0].stdout | from_json
+         | selectattr('name', 'equalto', pbs_sync_remote_name) | list | first | default({}) }}
+    pbs_sync_current: >-
+      {{ pbs_sync_lists.results[1].stdout | from_json
+         | selectattr('id', 'equalto', pbs_datastore_name ~ '-offsite') | list | first | default({}) }}
+
+# The password is briefly visible in this command's arguments, as with the admin user.
+- name: Create the remote
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - remote
+      - create
+      - "{{ pbs_sync_remote_name }}"
+      - --host
+      - "{{ pbs_sync_remote_host }}"
+      - --auth-id
+      - "{{ pbs_sync_remote_auth_id }}"
+      - --password
+      - "{{ pbs_sync_remote_password }}"
+      - --fingerprint
+      - "{{ pbs_sync_remote_fingerprint }}"
+  when: pbs_remote_current | length == 0
+  changed_when: true
+  no_log: true
+
+# A changed password in the vault is NOT detected: use `remote update --password` once by hand.
+- name: Update the remote when it differs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - remote
+      - update
+      - "{{ pbs_sync_remote_name }}"
+      - --host
+      - "{{ pbs_sync_remote_host }}"
+      - --auth-id
+      - "{{ pbs_sync_remote_auth_id }}"
+      - --fingerprint
+      - "{{ pbs_sync_remote_fingerprint }}"
+  when:
+    - pbs_remote_current | length > 0
+    - >-
+      (pbs_remote_current.host | default('')) != pbs_sync_remote_host
+      or (pbs_remote_current['auth-id'] | default('')) != pbs_sync_remote_auth_id
+      or (pbs_remote_current.fingerprint | default('') | lower) != (pbs_sync_remote_fingerprint | lower)
+  changed_when: true
+
+- name: Create the sync job
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - sync-job
+      - create
+      - "{{ pbs_datastore_name }}-offsite"
+      - --store
+      - "{{ pbs_datastore_name }}"
+      - --remote
+      - "{{ pbs_sync_remote_name }}"
+      - --remote-store
+      - "{{ pbs_sync_remote_datastore }}"
+      - --schedule
+      - "{{ pbs_sync_schedule }}"
+      - --sync-direction
+      - push
+      - --remove-vanished
+      - "false"
+  when: pbs_sync_current | length == 0
+  changed_when: true
+
+- name: Update the sync job when it differs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - sync-job
+      - update
+      - "{{ pbs_datastore_name }}-offsite"
+      - --remote
+      - "{{ pbs_sync_remote_name }}"
+      - --remote-store
+      - "{{ pbs_sync_remote_datastore }}"
+      - --schedule
+      - "{{ pbs_sync_schedule }}"
+      - --remove-vanished
+      - "false"
+  when:
+    - pbs_sync_current | length > 0
+    - >-
+      (pbs_sync_current.remote | default('')) != pbs_sync_remote_name
+      or (pbs_sync_current['remote-store'] | default('')) != pbs_sync_remote_datastore
+      or (pbs_sync_current.schedule | default('')) != pbs_sync_schedule
+      or (pbs_sync_current['remove-vanished'] | default(false) | bool)
+  changed_when: true

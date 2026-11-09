@@ -1,0 +1,39 @@
+---
+- name: Check whether the PBS package is installed
+  # Runs unconditionally (via the 'always' tag) so pbs_installed exists even when only some tags
+  # run (e.g. --tags pbs_config) on a fresh host. Plain dpkg-query: faster than apt facts.
+
+  ansible.builtin.command:
+    argv: [dpkg-query, --show, "--showformat=${Status}", proxmox-backup-server]
+  register: pbs_pkg
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [always]
+
+- name: Remember whether PBS is installed
+  ansible.builtin.set_fact:
+    pbs_installed: "{{ pbs_pkg.stdout == 'install ok installed' }}"
+  tags: [always]
+
+- name: Install PBS
+  ansible.builtin.import_tasks: install.yml
+  tags: [pbs, pbs_install]
+
+# The condition 'not ansible_check_mode or pbs_installed' means:
+# 1. Normal runs always execute the config tasks (install.yml has just installed PBS).
+# 2. Dry-runs (--check) on a brand-new host skip them instead of failing on a missing binary.
+- name: Datastore, users, jobs
+  ansible.builtin.import_tasks: config.yml
+  when: not ansible_check_mode or pbs_installed
+  tags: [pbs, pbs_config]
+
+- name: Off-box sync to a second PBS
+  ansible.builtin.import_tasks: sync.yml
+  when: (not ansible_check_mode or pbs_installed) and pbs_sync_enabled | bool
+  tags: [pbs, pbs_sync]
+
+- name: Failure notifications
+  ansible.builtin.import_tasks: notify.yml
+  when: (not ansible_check_mode or pbs_installed) and pbs_notify_enabled | bool
+  tags: [pbs, pbs_notify]

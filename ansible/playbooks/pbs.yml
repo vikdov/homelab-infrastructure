@@ -1,0 +1,7 @@
+---
+- name: PBS | install and configure
+  hosts: pbs
+  become: true
+  gather_facts: true
+  roles:
+    - role: pbs
