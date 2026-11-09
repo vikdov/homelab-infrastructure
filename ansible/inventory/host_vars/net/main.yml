@@ -16,7 +16,7 @@ pihole_extra_records: >-
         | map('regex_replace', '^', pihole_edge_ip ~ ' ')
         | map('regex_replace', '$', '.' ~ hostvars['edge'].edge_domain) | list) }}
 
-# Real values required (README: "Computing the installer checksum"); preflight checks if the checksum matches
+# Bump ref and checksum together; compute the checksum per README ("Computing the installer checksum").
 pihole_installer_ref: "v6.5"
 pihole_installer_checksum: "sha256:0c67c8f8358fede4b4dd8d51b429114461c9bb90ad56ff00ef05637f664bf3ac"
 

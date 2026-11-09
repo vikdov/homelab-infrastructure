@@ -114,3 +114,9 @@ variable "on_boot" {
   type        = bool
   default     = false
 }
+
+variable "protection" {
+  description = "Prevent accidental deletion or destructive changes to the VM"
+  type        = bool
+  default     = false
+}

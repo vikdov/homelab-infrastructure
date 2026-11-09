@@ -23,7 +23,7 @@
 # ---------------------------------------------------------------------------
 
 variable "lan_cidr" {
-  description = "Physical LAN (vmbr0) network."
+  description = "Subnet for the physical home network (vmbr0) allowed to reach internal services and proxies."
   type        = string
   default     = "192.168.1.0/24"
 

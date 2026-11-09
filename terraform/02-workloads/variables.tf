@@ -92,22 +92,25 @@ variable "lxc_guests" {
       pool_id   = "core"
       cores     = 2
       memory_mb = 1536
+      swap_mb   = 512
       disk_gb   = 30
       networks = [
         { bridge = "infra", ip = "10.10.10.10/24", gateway = "10.10.10.1" }
       ]
-      tags = ["observability"]
+      nesting = true
+      tags    = ["observability"]
     }
     pbs = {
       vmid      = 111
       pool_id   = "core"
       cores     = 1
       memory_mb = 1024
-      disk_gb   = 8
+      disk_gb   = 50
       networks = [
         { bridge = "infra", ip = "10.10.10.11/24", gateway = "10.10.10.1" }
       ]
-      tags = ["backup"]
+      tags    = ["backup"]
+      nesting = true
     }
   }
 }
@@ -138,9 +141,23 @@ variable "vm_guests" {
     tags                = optional(list(string), [])
     started             = optional(bool, true)
     on_boot             = optional(bool, true)
+    protection          = optional(bool, false)
   }))
 
   default = {
+    scratch = {
+      vmid      = 1000
+      pool_id   = "core"
+      cores     = 3
+      memory_mb = 2048
+      disk_gb   = 20
+      networks = [
+        { bridge = "vmbr0", ip = "192.168.1.130/24", gateway = "192.168.1.1" },
+      ]
+      tags    = ["scratch"]
+      started = false
+      on_boot = false
+    }
     identity = {
       vmid      = 120
       pool_id   = "core"
@@ -162,8 +179,8 @@ variable "vm_guests" {
         { bridge = "apps", ip = "10.10.30.10/24", gateway = "10.10.30.1" }
       ]
       tags    = ["apps"]
-      started = false
-      on_boot = false
+      started = true
+      on_boot = true
     }
     "k3s-cp1" = {
       vmid      = 301

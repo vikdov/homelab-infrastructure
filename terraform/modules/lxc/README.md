@@ -7,13 +7,13 @@
 | ---- | ------- |
 | <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | ~> 1.16.0 |
 | <a name="requirement_local"></a> [local](#requirement\_local) | ~> 2.9.0 |
-| <a name="requirement_proxmox"></a> [proxmox](#requirement\_proxmox) | ~> 0.114.0 |
+| <a name="requirement_proxmox"></a> [proxmox](#requirement\_proxmox) | ~> 0.120.0 |
 
 ## Providers
 
 | Name | Version |
 | ---- | ------- |
-| <a name="provider_proxmox"></a> [proxmox](#provider\_proxmox) | 0.114.0 |
+| <a name="provider_proxmox"></a> [proxmox](#provider\_proxmox) | 0.120.0 |
 
 ## Modules
 

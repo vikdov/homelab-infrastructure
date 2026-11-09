@@ -100,6 +100,9 @@ resource "proxmox_virtual_environment_container" "this" {
   # Ignore template changes after initial creation to prevent
   # unnecessary container recreation.
   lifecycle {
-    ignore_changes = [operating_system[0].template_file_id]
+    ignore_changes = [
+      operating_system[0].template_file_id,
+      device_passthrough,
+    ]
   }
 }

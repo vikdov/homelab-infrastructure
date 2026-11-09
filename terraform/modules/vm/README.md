@@ -7,13 +7,13 @@
 | ---- | ------- |
 | <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | ~> 1.16.0 |
 | <a name="requirement_local"></a> [local](#requirement\_local) | ~> 2.9.0 |
-| <a name="requirement_proxmox"></a> [proxmox](#requirement\_proxmox) | ~> 0.114.0 |
+| <a name="requirement_proxmox"></a> [proxmox](#requirement\_proxmox) | ~> 0.120.0 |
 
 ## Providers
 
 | Name | Version |
 | ---- | ------- |
-| <a name="provider_proxmox"></a> [proxmox](#provider\_proxmox) | 0.114.0 |
+| <a name="provider_proxmox"></a> [proxmox](#provider\_proxmox) | 0.120.0 |
 
 ## Modules
 
@@ -41,6 +41,7 @@ No modules.
 | <a name="input_node_name"></a> [node\_name](#input\_node\_name) | Proxmox node on which the VM is created | `string` | n/a | yes |
 | <a name="input_on_boot"></a> [on\_boot](#input\_on\_boot) | Start the VM automatically when the Proxmox node boots | `bool` | `false` | no |
 | <a name="input_pool_id"></a> [pool\_id](#input\_pool\_id) | Proxmox resource pool for the VM | `string` | `null` | no |
+| <a name="input_protection"></a> [protection](#input\_protection) | Prevent accidental deletion or destructive changes to the VM | `bool` | `false` | no |
 | <a name="input_ssh_public_keys"></a> [ssh\_public\_keys](#input\_ssh\_public\_keys) | SSH public keys injected into the VM through cloud-init | `list(string)` | n/a | yes |
 | <a name="input_started"></a> [started](#input\_started) | Whether the VM should be running after creation | `bool` | `true` | no |
 | <a name="input_tags"></a> [tags](#input\_tags) | Proxmox tags assigned to the VM | `list(string)` | `[]` | no |
