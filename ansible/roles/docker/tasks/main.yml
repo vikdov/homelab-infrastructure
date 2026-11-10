@@ -1,0 +1,103 @@
+---
+# Installs the docker as official documentation suggests https://docs.docker.com/engine/install/debian/
+- name: Require a supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Debian'
+      - ansible_facts['architecture'] in docker_arch_map
+      - docker_repo_codename | length > 0
+    fail_msg: "This role supports Debian (stable release with a codename) on supported architectures only."
+    quiet: true
+
+- name: Repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+    state: present
+    lock_timeout: "{{ docker_apt_lock_timeout }}"
+
+- name: APT keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Docker signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+  register: docker_key
+
+- name: Docker repository (deb822)
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible
+      Types: deb
+      URIs: https://download.docker.com/linux/debian
+      Suites: {{ docker_repo_codename }}
+      Components: stable
+      Architectures: {{ docker_arch_map[ansible_facts['architecture']] }}
+      Signed-By: /etc/apt/keyrings/docker.asc
+  register: docker_repo
+
+- name: Refresh apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: "{{ docker_apt_lock_timeout }}"
+  when: docker_repo is changed or docker_key is changed
+
+- name: Gather package facts
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Refuse to replace distro container packages
+  ansible.builtin.assert:
+    that: docker_conflicting_packages | intersect(ansible_facts['packages'].keys() | list) | length == 0
+    fail_msg: >-
+      Conflicting packages installed:
+      {{ docker_conflicting_packages | intersect(ansible_facts['packages'].keys() | list) | join(', ') }}.
+      Remove them before running this role.
+    quiet: true
+
+- name: Install Docker Engine, buildx and the compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    lock_timeout: "{{ docker_apt_lock_timeout }}"
+
+# Validated before it lands, so a typo in docker_daemon_extra cannot leave dockerd unable to start.
+# With live-restore enabled, a restart does not bounce running containers.
+- name: Daemon configuration
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ docker_daemon_config | combine(docker_daemon_extra, recursive=true) | to_nice_json }}\n"
+    validate: dockerd --validate --config-file=%s
+  notify: Restart docker
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+# Later roles must see the final daemon configuration, so restart now rather than at play end.
+- name: Apply daemon changes
+  ansible.builtin.meta: flush_handlers

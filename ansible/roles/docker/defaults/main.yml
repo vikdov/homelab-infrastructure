@@ -1,0 +1,25 @@
+---
+# Maximum time in seconds to wait for apt package manager locks to clear
+docker_apt_lock_timeout: 300
+
+# Dynamic target release codename (e.g., bookworm, trixie) based on system facts
+docker_repo_codename: "{{ ansible_facts['distribution_release'] }}"
+
+# Default size limit for container log files before rotation
+docker_log_max_size: 10m
+
+# Maximum number of rotated log files to retain per container
+docker_log_max_file: "3"
+
+# Baseline configuration written to /etc/docker/daemon.json
+docker_daemon_config:
+  log-driver: json-file
+  log-opts:
+    max-size: "{{ docker_log_max_size }}"
+    max-file: "{{ docker_log_max_file }}"
+  # Keep containers running while dockerd restarts. Incompatible with Docker Swarm.
+  live-restore: true
+
+# Dictionary for user-supplied overrides. Merged recursively over docker_daemon_config
+# so default settings are never wiped out accidentally.
+docker_daemon_extra: {}
