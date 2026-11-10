@@ -1,0 +1,16 @@
+---
+# https://docs.docker.com/engine/install/debian/
+docker_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+  armhf: armhf
+  ppc64le: ppc64le
+
+docker_conflicting_packages:
+  - docker.io
+  - docker-compose
+  - docker-doc
+  - docker-buildx
+  - podman-docker
+  - containerd
+  - runc

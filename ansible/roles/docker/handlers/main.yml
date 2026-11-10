@@ -1,0 +1,6 @@
+---
+- name: Restart docker
+  # Restarts the Docker daemon when configuration changes require a reload
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
