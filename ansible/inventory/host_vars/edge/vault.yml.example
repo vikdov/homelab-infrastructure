@@ -1,0 +1,9 @@
+---
+# Copy to vault.yml and encrypt it: ansible-vault encrypt inventory/host_vars/edge/vault.yml
+# Cloudflare API token: Zone:DNS:Edit and Zone:Zone:Read on the edge zone only.
+vault_cf_dns_token: "..."
+# Alternative: scope vault_cf_dns_token to Zone:DNS:Edit and add a Zone:Zone:Read token here,
+# then set traefik_cf_zone_token in main.yml.
+# vault_cf_zone_token: "..."
+# Token of the remotely managed tunnel (Zero Trust dashboard).
+vault_cf_tunnel_token: "..."

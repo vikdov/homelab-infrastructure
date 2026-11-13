@@ -1,0 +1,8 @@
+---
+- name: Install and run the tunnel
+  ansible.builtin.import_tasks: present.yml
+  when: cloudflared_state == 'present'
+
+- name: Remove the tunnel
+  ansible.builtin.import_tasks: absent.yml
+  when: cloudflared_state == 'absent'

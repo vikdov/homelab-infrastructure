@@ -1,0 +1,99 @@
+---
+# Traefik keeps serving whatever is in acme.json, even after caServer changes. The role records
+# which CA the stored certificates came from (.acme-ca) and, when the staging flag flips,
+# stops the service, moves acme.json to a timestamped backup, and only then updates the marker.
+# A run that dies half-way therefore re-enters the reset on the next run instead of losing it.
+- name: Stat the ACME CA marker
+  ansible.builtin.stat:
+    path: /var/lib/traefik/.acme-ca
+  register: traefik_acme_marker_stat
+
+- name: Stat the ACME store
+  ansible.builtin.stat:
+    path: /var/lib/traefik/acme.json
+  register: traefik_acme_store_stat
+
+- name: Read the recorded ACME CA
+  ansible.builtin.slurp:
+    src: /var/lib/traefik/.acme-ca
+  register: traefik_acme_marker
+  when: traefik_acme_marker_stat.stat.exists
+
+# Hosts that predate the marker: the account URI inside acme.json names the CA, so existing
+# certificates are only wiped when they really come from the other CA.
+- name: Read the ACME store to detect its CA (hosts without a marker)
+  ansible.builtin.slurp:
+    src: /var/lib/traefik/acme.json
+  register: traefik_acme_store
+  no_log: true # holds the account private key
+  when:
+    - not traefik_acme_marker_stat.stat.exists
+    - traefik_acme_store_stat.stat.exists
+
+- name: Work out which CA the stored certificates came from
+  ansible.builtin.set_fact:
+    traefik_acme_ca_stored: >-
+      {%- if traefik_acme_marker_stat.stat.exists -%}
+      {{ traefik_acme_marker.content | b64decode | trim }}
+      {%- elif traefik_acme_store_stat.stat.exists -%}
+      {%- set traefik_acme_raw = traefik_acme_store.content | b64decode -%}
+      {{ 'staging' if 'acme-staging-v02' in traefik_acme_raw
+         else ('production' if 'acme-v02.api.letsencrypt.org' in traefik_acme_raw else '') }}
+      {%- endif -%}
+
+- name: Reset the ACME store when the CA changes
+  when:
+    - (traefik_acme_ca_stored | default('') | trim | length) > 0
+    - (traefik_acme_ca_stored | trim) != traefik_acme_ca_wanted
+    - traefik_acme_store_stat.stat.exists
+  block:
+    - name: Stop traefik so it cannot rewrite the store mid-reset
+      ansible.builtin.systemd:
+        name: traefik
+        state: stopped
+      register: traefik_acme_stop
+      failed_when: traefik_acme_stop is failed and 'Could not find' not in (traefik_acme_stop.msg | default(''))
+
+    - name: Keep a copy of the old store
+      vars:
+        traefik_acme_backup_name: >-
+          acme.json.{{ traefik_acme_ca_stored | trim }}.{{ ansible_facts.date_time.iso8601_basic_short }}.bak
+      ansible.builtin.copy:
+        remote_src: true
+        src: /var/lib/traefik/acme.json
+        dest: "/var/lib/traefik/{{ traefik_acme_backup_name }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Drop the old store
+      ansible.builtin.file:
+        path: /var/lib/traefik/acme.json
+        state: absent
+      notify: Restart traefik
+
+# Written last on purpose.
+- name: Record which ACME CA the store belongs to
+  ansible.builtin.copy:
+    dest: /var/lib/traefik/.acme-ca
+    content: "{{ traefik_acme_ca_wanted }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: List ACME store backups
+  ansible.builtin.find:
+    paths: /var/lib/traefik
+    patterns: "acme.json.*.bak"
+  register: traefik_acme_backups
+
+- name: Prune old ACME store backups
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: >-
+    {{ (traefik_acme_backups.files
+        | sort(attribute='mtime', reverse=true)
+        | list)[(traefik_acme_backups_keep | int):] }}
+  loop_control:
+    label: "{{ item.path }}"

@@ -1,0 +1,24 @@
+---
+- name: Edge | routes, Traefik and cloudflared
+  hosts: edge
+  become: true
+  gather_facts: false
+  # One edge host at a time, and stop the rollout on the first failure: with two or more edge
+  # hosts sharing the same tunnel token, Cloudflare keeps routing through the healthy connector
+  # while the other one is being changed.
+  serial: 1
+  max_fail_percentage: 0
+  pre_tasks:
+    - name: Wait for the guest
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+    - name: Gather facts
+      ansible.builtin.setup:
+  roles:
+    - role: static_routes
+      tags: [static_routes]
+    - role: traefik
+      tags: [traefik]
+    # Set cloudflared_state: absent in host_vars to remove the tunnel; it is never skipped silently.
+    - role: cloudflared
+      tags: [cloudflared]
