@@ -1,0 +1,61 @@
+# {{ ansible_managed }}
+# Static configuration (changes need a restart).
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+log:
+  level: {{ traefik_log_level }}
+{% if traefik_access_log_enabled | bool %}
+accessLog:
+  format: json
+{% if traefik_access_log_status_codes | length > 0 %}
+  filters:
+    statusCodes: {{ traefik_access_log_status_codes | to_json }}
+{% endif %}
+{% endif %}
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  # No forwardedHeaders.trustedIPs: client-supplied X-Forwarded-* headers are overwritten.
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: le
+        domains:
+          - main: "{{ traefik_domain }}"
+            sans: ["*.{{ traefik_domain }}"]
+  # Plain HTTP for cloudflared only (loopback). No redirect, or the tunnel would loop.
+  # Only routers that list this entrypoint (public: true services) are reachable here.
+  tunnel:
+    address: "127.0.0.1:8081"
+    forwardedHeaders:
+      trustedIPs: ["127.0.0.1/32"]
+  # Prometheus + /ping. Bound to {{ traefik_metrics_address }}.
+  metrics:
+    address: "{{ traefik_metrics_address }}"
+ping:
+  entryPoint: metrics
+metrics:
+  prometheus:
+    entryPoint: metrics
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+certificatesResolvers:
+  le:
+    acme:
+      email: "{{ traefik_acme_email }}"
+      storage: /var/lib/traefik/acme.json
+{% if traefik_acme_staging | bool %}
+      caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+{% endif %}
+      dnsChallenge:
+        provider: cloudflare
+        resolvers: {{ traefik_acme_resolvers | to_json }}

@@ -1,0 +1,76 @@
+---
+# Negative tests: every bad input must be refused by tasks/validate.yml for the intended reason.
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    traefik_test_base:
+      traefik_version: "3.7.17"
+      traefik_cf_dns_token: molecule-dummy-token
+      traefik_domain: lab.test
+      traefik_acme_email: ops@lab.test
+      traefik_metrics_address: "127.0.0.1:8082"
+      traefik_authelia_enabled: true
+      traefik_authelia_url: http://127.0.0.1:9091
+      traefik_rate_limit_enabled: false
+      traefik_services: []
+    traefik_test_cases:
+      - name: baseline input is accepted
+        expect: ""
+        vars: {}
+      - name: placeholder domain
+        expect: real values
+        vars: { traefik_domain: lab.example.com }
+      - name: placeholder email
+        expect: real values
+        vars: { traefik_acme_email: ops@example.org }
+      - name: empty token
+        expect: traefik_cf_dns_token
+        vars: { traefik_cf_dns_token: "" }
+      - name: version with leading v
+        expect: exact v3 release
+        vars: { traefik_version: "v3.7.17" }
+      - name: wildcard metrics address
+        expect: traefik_metrics_address must
+        vars: { traefik_metrics_address: "0.0.0.0:8082" }
+      - name: metrics port clash
+        expect: traefik_metrics_address must
+        vars: { traefik_metrics_address: "127.0.0.1:8081" }
+      - name: authelia url with a path
+        expect: traefik_authelia_url must
+        vars: { traefik_authelia_url: "http://127.0.0.1:9091/api" }
+      - name: public service without any protection
+        expect: Invalid traefik service
+        vars:
+          traefik_services:
+            - { name: web, upstream: "http://127.0.0.1:1", public: true }
+      - name: public service protected only by rate-limit
+        expect: Invalid traefik service
+        vars:
+          traefik_rate_limit_enabled: true
+          traefik_services:
+            - name: web
+              upstream: "http://127.0.0.1:1"
+              public: true
+              middlewares: [rate-limit]
+      - name: unknown middleware
+        expect: Invalid traefik service
+        vars:
+          traefik_services:
+            - { name: web, upstream: "http://127.0.0.1:1", middlewares: [nope] }
+      - name: authelia middleware while authelia is disabled
+        expect: Invalid traefik service
+        vars:
+          traefik_authelia_enabled: false
+          traefik_services:
+            - name: web
+              upstream: "http://127.0.0.1:1"
+              middlewares: [authelia]
+      - name: service name ending in -public
+        expect: Invalid traefik service
+        vars:
+          traefik_services:
+            - { name: web-public, upstream: "http://127.0.0.1:1" }
+      - name: duplicate service names
+        expect: Duplicate name

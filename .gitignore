@@ -30,3 +30,4 @@ terraform.rc
 **/vault.yml
 *.vault.yml
 **/firewall.generated.yml
+ansible/inventory/host_vars/edge/main.yml

@@ -1,0 +1,54 @@
+---
+# Copy to main.yml
+static_routes_list:
+  - { to: 10.10.0.0/16, via: 10.10.20.1, dev: eth1 }
+
+# --- Replace before the first run: the traefik role refuses example.* values ---
+traefik_domain: lab.example.com
+traefik_acme_email: you@example.com
+
+# Staging first: confirm issuance works, then set this to false. Flipping the flag stops Traefik,
+# moves /var/lib/traefik/acme.json to a timestamped .bak and re-issues (roles/traefik/README.md).
+traefik_acme_staging: true
+
+traefik_version: "3.7.19" # exact v3 release; bump to upgrade, set the old one back to roll back
+traefik_cf_dns_token: "{{ vault_cf_dns_token | default('') }}"
+# Optional: token with only Zone:Zone:Read. Then traefik_cf_dns_token needs only Zone:DNS:Edit.
+# traefik_cf_zone_token: "{{ vault_cf_zone_token | default('') }}"
+# Metrics/health are loopback-only by default. To let the monitoring host scrape them, bind to
+# the management interface address (and keep the Proxmox firewall rule as a second layer):
+# traefik_metrics_address: "10.10.10.5:8082"
+# cloudflared_metrics: "10.10.10.5:20241"
+
+traefik_authelia_enabled: false # enable once Authelia runs
+traefik_authelia_url: http://10.10.10.20:9091
+
+# Optional flood protection, then add rate-limit / in-flight to a service's middlewares.
+# traefik_rate_limit_enabled: true
+# traefik_inflight_enabled: true
+
+# present | absent. Never skipped silently: "present" without a token fails the run.
+cloudflared_state: present
+cloudflared_version: "2026.10.7"
+cloudflared_token: "{{ vault_cf_tunnel_token | default('') }}"
+# sha256 of https://pkg.cloudflare.com/cloudflare-main.gpg, taken from a trusted machine:
+#   curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sha256sum
+cloudflared_key_sha256: ""
+# Optional tuning (defaults shown). See roles/cloudflared/README.md.
+# cloudflared_protocol: auto        # http2 if UDP 7844 is blocked
+# cloudflared_gomemlimit: 128MiB    # soft Go heap target
+# cloudflared_memory_max: 256M      # hard cgroup ceiling
+# cloudflared_egress_check: true    # preflight outbound TCP 7844 to the Cloudflare edge
+# HA: add a second host to the "edge" group with the same token (see the role README).
+
+# name -> https://<name>.<traefik_domain>.
+# public: true also routes it on the loopback "tunnel" entrypoint (127.0.0.1:8081). In the
+# Cloudflare dashboard, point that tunnel's public hostname at http://127.0.0.1:8081.
+# A public service needs the authelia middleware or allow_public_unauthenticated: true.
+traefik_services:
+  - { name: auth, upstream: "http://10.10.10.20:9091" }
+  - { name: vault, upstream: "http://10.10.10.20:8080" }
+  - { name: grafana, upstream: "http://10.10.10.10:3000" }
+  - { name: cloud, upstream: "http://10.10.30.10:8080" }
+  - { name: photos, upstream: "http://10.10.30.10:2283" }
+  # - { name: vault, upstream: "http://10.10.10.20:8080", public: true, middlewares: [rate-limit, authelia] }

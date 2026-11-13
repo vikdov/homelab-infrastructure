@@ -1,0 +1,37 @@
+---
+# One validation case. An empty "expect" means the input must be accepted.
+- name: "Case | {{ traefik_case.name }}"
+  block:
+    - name: Run validation with the case's input
+      ansible.builtin.include_role:
+        name: traefik
+        tasks_from: validate
+      vars:
+        traefik_case_effective: "{{ traefik_test_base | combine(traefik_case.vars) }}"
+        traefik_version: "{{ traefik_case_effective.traefik_version }}"
+        traefik_cf_dns_token: "{{ traefik_case_effective.traefik_cf_dns_token }}"
+        traefik_domain: "{{ traefik_case_effective.traefik_domain }}"
+        traefik_acme_email: "{{ traefik_case_effective.traefik_acme_email }}"
+        traefik_metrics_address: "{{ traefik_case_effective.traefik_metrics_address }}"
+        traefik_authelia_enabled: "{{ traefik_case_effective.traefik_authelia_enabled }}"
+        traefik_authelia_url: "{{ traefik_case_effective.traefik_authelia_url }}"
+        traefik_rate_limit_enabled: "{{ traefik_case_effective.traefik_rate_limit_enabled }}"
+        traefik_services: "{{ traefik_case_effective.traefik_services }}"
+
+    - name: Fail if validation accepted bad input
+      ansible.builtin.fail:
+        msg: "UNEXPECTEDLY ACCEPTED: {{ traefik_case.name }}"
+      when: traefik_case.expect | length > 0
+  rescue:
+    - name: Refused for the intended reason
+      vars:
+        traefik_case_msgs: >-
+          {{ ansible_failed_result.results | default([ansible_failed_result])
+             | selectattr('msg', 'defined') | map(attribute='msg') | join(' ') }}
+      ansible.builtin.assert:
+        that:
+          - traefik_case.expect | length > 0
+          - "'UNEXPECTEDLY ACCEPTED' not in traefik_case_msgs"
+          - traefik_case.expect in traefik_case_msgs
+        fail_msg: "Case '{{ traefik_case.name }}' failed validation: {{ traefik_case_msgs }}"
+        quiet: true
