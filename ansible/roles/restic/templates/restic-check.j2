@@ -1,0 +1,32 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Read-only integrity check of the repository.
+# shellcheck disable=SC2154
+set -euo pipefail
+# shellcheck source=/dev/null
+. {{ (restic_lib_dir ~ '/lib.sh') | quote }}
+
+start=$(date +%s)
+
+on_exit() {
+  local code=$?
+  record_run restic_check restic-check "$code" "$start" ||
+    echo "restic-check: could not write metrics to $metrics_dir" >&2
+}
+trap on_exit EXIT
+trap 'exit 143' TERM INT
+
+take_lock
+start=$(date +%s)
+load_env {{ (restic_config_dir ~ '/env') | quote }}
+
+{% if restic_check_cycle_weeks | int > 0 %}
+# Rotating data verification: every pack is read once per cycle. The counter is weeks since the
+# Unix epoch (UTC), so it never resets at New Year, unlike the ISO week number. Epoch weeks turn
+# over on Thursday 00:00 UTC; keep the schedule away from that moment.
+cycle={{ restic_check_cycle_weeks | int }}
+week=$(( $(date +%s) / 604800 ))
+restic check "--read-data-subset=$((week % cycle + 1))/$cycle"
+{% else %}
+restic check
+{% endif %}

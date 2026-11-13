@@ -1,0 +1,41 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Restores the canary of the LATEST snapshot with --verify and validates its content. The backup
+# writes a fresh canary before every snapshot, so this reads data from a recent pack.
+# shellcheck disable=SC2154
+set -euo pipefail
+# shellcheck source=/dev/null
+. {{ (restic_lib_dir ~ '/lib.sh') | quote }}
+
+target=""
+start=$(date +%s)
+
+on_exit() {
+  local code=$?
+  if [ -n "$target" ]; then
+    rm -rf -- "$target"
+  fi
+  record_run restic_restore_test restic-restore-test "$code" "$start" ||
+    echo "restic-restore-test: could not write metrics to $metrics_dir" >&2
+}
+trap on_exit EXIT
+trap 'exit 143' TERM INT
+
+take_lock
+start=$(date +%s)
+# A previous run killed by SIGKILL or the OOM killer cannot run its exit trap. We hold the lock, so
+# no other restore test is using these directories. (With the sandbox on, /var/tmp is private.)
+find /var/tmp -maxdepth 1 -name 'restic-restore-test.*' -exec rm -rf -- {} +
+load_env {{ (restic_config_dir ~ '/env') | quote }}
+
+target=$(mktemp -d /var/tmp/restic-restore-test.XXXXXX)
+restic restore latest \
+  --host "$snapshot_host" \
+  --target "$target" \
+  --verify \
+  --include "$canary_file"
+verify_canary "$target$canary_file" || {
+  echo "restic-restore-test: the restored canary is missing or its content is invalid" >&2
+  exit 1
+}
+echo "restore test OK"

@@ -1,0 +1,45 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Client-prune mode only: forget old snapshots of this host and prune the repository.
+# shellcheck disable=SC2154
+set -euo pipefail
+{% if not (restic_client_prune | bool) %}
+echo "restic-prune: restic_client_prune is false (locked mode), this repository must not be pruned from a client" >&2
+exit 1
+{% else %}
+# shellcheck source=/dev/null
+. {{ (restic_lib_dir ~ '/lib.sh') | quote }}
+
+start=$(date +%s)
+
+on_exit() {
+  local code=$?
+  record_run restic_prune restic-prune "$code" "$start" ||
+    echo "restic-prune: could not write metrics to $metrics_dir" >&2
+}
+trap on_exit EXIT
+trap 'exit 143' TERM INT
+
+take_lock
+start=$(date +%s)
+load_env {{ (restic_config_dir ~ '/env') | quote }}
+
+# --group-by host: retention covers all snapshots of this host, even when restic_paths changed
+# or the canary path was added/removed (otherwise old path sets would never be pruned).
+restic forget \
+  --host "$snapshot_host" \
+  --group-by host \
+{% if restic_keep_daily | int > 0 %}
+  --keep-daily {{ restic_keep_daily | int }} \
+{% endif %}
+{% if restic_keep_weekly | int > 0 %}
+  --keep-weekly {{ restic_keep_weekly | int }} \
+{% endif %}
+{% if restic_keep_monthly | int > 0 %}
+  --keep-monthly {{ restic_keep_monthly | int }} \
+{% endif %}
+{% if restic_keep_yearly | int > 0 %}
+  --keep-yearly {{ restic_keep_yearly | int }} \
+{% endif %}
+  --prune
+{% endif %}

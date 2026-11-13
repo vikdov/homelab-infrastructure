@@ -1,0 +1,7 @@
+---
+# Tags: restic_install, restic_config (incl. scripts), restic_units.
+- name: Restic backups
+  hosts: restic_clients
+  become: true
+  roles:
+    - role: restic

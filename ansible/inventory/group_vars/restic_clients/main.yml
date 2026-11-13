@@ -1,0 +1,10 @@
+---
+# Shared by all hosts: only what is NOT a trust boundary. Bucket, token and passphrase are PER HOST
+# (host_vars/<host>/) if security is prioritized.
+# The role fails when two hosts resolve to the same repository or share a passphrase, and warns
+# when they share a bucket or token (weaker-isolation setups: restic_bucket_prefix, restic_client_prune).
+restic_r2_account_id: "{{ vault_r2_account_id }}"
+restic_r2_jurisdiction: "" # "eu" for buckets created in the EU jurisdiction
+# Other S3-compatible provider instead of R2:
+# restic_endpoint: "https://s3.example.com"
+# restic_s3_region: "eu-central-1"

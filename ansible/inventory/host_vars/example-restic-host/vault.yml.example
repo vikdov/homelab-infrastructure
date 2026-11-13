@@ -1,0 +1,8 @@
+---
+# Copy to vault.yml and encrypt: ansible-vault encrypt inventory/host_vars/web01/vault.yml
+# Token: Cloudflare R2 "Object Read & Write", scoped to THIS host's bucket only.
+# Passphrase: unique per host, `openssl rand -base64 32`. Keep an OFFLINE copy of every
+# passphrase; without it the backups cannot be recovered.
+vault_restic_access_key_id: "REPLACE-WITH-ACCESS-KEY-ID"
+vault_restic_secret_access_key: "REPLACE-WITH-SECRET-ACCESS-KEY"
+vault_restic_password: "REPLACE-WITH-GENERATED-PASSPHRASE"

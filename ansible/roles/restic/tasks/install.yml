@@ -1,0 +1,28 @@
+---
+- name: Install restic
+  ansible.builtin.apt:
+    name: restic
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: "{{ restic_apt_lock_timeout }}"
+
+# Also runs under --check (read-only). On a fresh host restic is not installed yet in that case:
+# the result then has rc != 0 and the version assertion is skipped.
+- name: Query the restic version
+  ansible.builtin.command: restic version
+  register: restic_version_out
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require the minimum restic version
+  ansible.builtin.assert:
+    that:
+      - restic_version_out.rc == 0
+      - restic_version_out.stdout.split()[1] is version(restic_min_version, '>=')
+    fail_msg: >-
+      restic is missing or older than {{ restic_min_version }}
+      (found: {{ restic_version_out.stdout | default('nothing') }}): use a newer distribution release.
+    quiet: true
+  when: not ansible_check_mode or restic_version_out.rc == 0

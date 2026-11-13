@@ -1,0 +1,18 @@
+---
+# host_vars/<host>/main.yml. The secrets live next to it in vault.yml.
+restic_bucket: web01-backup # one bucket per host, created in Cloudflare (see the role README)
+restic_access_key_id: "{{ vault_restic_access_key_id }}"
+restic_secret_access_key: "{{ vault_restic_secret_access_key }}"
+restic_password: "{{ vault_restic_password }}"
+
+restic_paths:
+  - /etc
+  - /srv/data
+  - /var/backups/db
+# restic_pre_commands:
+#   - "pg_dumpall -h /var/run/postgresql | gzip > /var/backups/db/all.sql.gz"   # root: no su/sudo by default
+# restic_bucket_prefix: web01               # shared bucket, one prefix per host (weaker isolation)
+# restic_client_prune: true                 # client-prune mode: weekly forget+prune, do NOT lock the bucket
+# restic_excludes: ["*.tmp"]
+# restic_snapshot_host: old-hostname        # pin BEFORE renaming a host
+# restic_sandbox_enabled: false             # unprivileged LXC without nesting=1

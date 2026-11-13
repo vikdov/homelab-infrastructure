@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: restic
+  author: vikdov
+  description: >-
+    Append-only restic backups to an S3-compatible bucket (Cloudflare R2), one bucket per host,
+    with systemd timers, integrity checks, restore tests and monitoring
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+    - name: Ubuntu
+      versions: [noble]
+  galaxy_tags: [backup, restic, systemd]
+dependencies: []

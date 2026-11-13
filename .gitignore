@@ -28,3 +28,5 @@ terraform.rc
 **/.roles/
 *.retry
 **/vault.yml
+*.vault.yml
+**/firewall.generated.yml
