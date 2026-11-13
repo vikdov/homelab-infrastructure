@@ -1,0 +1,92 @@
+---
+# No no_log on the asserts: the conditions hold no secret values, and no_log would hide fail_msg.
+- name: Validate settings
+  ansible.builtin.assert:
+    that:
+      - restic_bucket is match('^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
+      - restic_access_key_id | length > 0
+      - restic_secret_access_key | length > 0
+      - restic_password | length > 0
+      - restic_paths | length > 0
+      - restic_paths | reject('match', '^/') | list | length == 0
+      - restic_backup_rw_paths | reject('match', '^/') | list | length == 0
+      - restic_bucket_prefix is match('^([A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*)?$')
+      - restic_bucket_prefix.split('/') | select('match', '^[.]+$') | list | length == 0
+      - restic_snapshot_host is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - restic_endpoint is match('^https://[^/.][^/]*$')
+      - restic_s3_region | length > 0
+      - >-
+        [restic_config_dir, restic_state_dir, restic_lib_dir, restic_bin_dir, restic_cache_dir,
+        restic_metrics_dir] | reject('match', '^/') | list | length == 0
+      - restic_check_cycle_weeks | int >= 0
+      - restic_backup_timeout_seconds | int > 0
+      - restic_check_timeout_seconds | int > 0
+      - restic_restore_test_timeout_seconds | int > 0
+      - restic_prune_timeout_seconds | int > 0
+      - restic_lock_wait_seconds | int >= 0
+      - restic_keep_daily | int >= 0
+      - restic_keep_weekly | int >= 0
+      - restic_keep_monthly | int >= 0
+      - restic_keep_yearly | int >= 0
+      - >-
+        not (restic_client_prune | bool) or
+        (restic_keep_daily | int + restic_keep_weekly | int +
+        restic_keep_monthly | int + restic_keep_yearly | int) > 0
+    fail_msg: >-
+      {{ inventory_hostname }} needs a valid bucket name (3-63 chars),
+      token, password, absolute restic_paths, restic_backup_rw_paths
+      and directories, a valid restic_snapshot_host (letters, digits, . _ -),
+      a valid bucket prefix (no leading/trailing slash, no "." or ".." segments),
+      a valid https endpoint (is restic_r2_account_id set?), a region,
+      positive timeouts, restic_check_cycle_weeks >= 0 and, when
+      restic_client_prune is true, at least one retention value above 0.
+    quiet: true
+
+# Best effort: these checks only see inventory variables of the hosts in this play (so not with
+# --limit to a single host). Hosts without the variable count as empty.
+- name: Require one repository and one passphrase per host
+  ansible.builtin.assert:
+    that:
+      - >-
+        restic_repo_ids | select('equalto', restic_bucket ~ '/' ~ restic_bucket_prefix)
+        | list | length == 1
+      - >-
+        restic_play_hosts | map(attribute='restic_password', default='')
+        | select('equalto', restic_password) | list | length == 1
+    fail_msg: >-
+      Another host of this play resolves to the same repository
+      (restic_bucket + restic_bucket_prefix) or uses the same restic_password
+      as {{ inventory_hostname }}. Hosts must never share a repository,
+      and each needs its own passphrase (sharing one shares a master key).
+    quiet: true
+  vars:
+    restic_play_hosts: "{{ ansible_play_hosts_all | map('extract', hostvars) | list }}"
+    restic_repo_ids: >-
+      {{ restic_play_hosts | map(attribute='restic_bucket', default='')
+      | zip(restic_play_hosts | map(attribute='restic_bucket_prefix', default=''))
+      | map('join', '/') | list }}
+
+- name: Warn about a shared bucket or token
+  ansible.builtin.debug:
+    msg: >-
+      WARNING {{ inventory_hostname }}: this bucket and/or token is shared
+      with other hosts, so a compromised host can write into the repositories
+      of the others{{ ' and, because clients may prune, delete them'
+      if restic_client_prune | bool else '' }}. Intended only for hosts you
+      trust equally; see the README.
+  when: >-
+    (restic_play_hosts | map(attribute='restic_bucket', default='')
+    | select('equalto', restic_bucket) | list | length > 1)
+    or (restic_play_hosts | map(attribute='restic_access_key_id', default='')
+    | select('equalto', restic_access_key_id) | list | length > 1)
+  vars:
+    restic_play_hosts: "{{ ansible_play_hosts_all | map('extract', hostvars) | list }}"
+
+- name: Warn that clients can prune
+  ansible.builtin.debug:
+    msg: >-
+      WARNING {{ inventory_hostname }}: client-prune mode
+      (restic_client_prune: true). The client token can delete, so a
+      compromised host can destroy its backup history. Do not lock
+      the bucket in this mode.
+  when: restic_client_prune | bool

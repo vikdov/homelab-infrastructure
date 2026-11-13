@@ -1,0 +1,141 @@
+---
+# ---------------------------------------------------------------------------------------------
+# Two operating modes (pick with restic_client_prune):
+#
+# LOCKED MODE (default, restic_client_prune: false)
+#   One bucket + one token per host (host_vars). The bucket has an R2 lock rule that forbids
+#   deletes/overwrites (configured OUTSIDE this role, with an admin token that never touches the
+#   hosts). Clients only add data, so a compromised host cannot destroy its history. No prune job
+#   is installed; prune manually from your workstation with the admin token.
+#   Lock rule must NOT cover the "locks/" prefix, or restic cannot take/refresh its locks.
+#
+# CLIENT-PRUNE MODE (restic_client_prune: true)
+#   The client token can delete, so the role installs a weekly `forget --prune` job. Do NOT lock
+#   the bucket in this mode (prune would fail). A compromised host can destroy its own history.
+#   Works with isolated buckets (still recommended) or, as a further trade-off, a shared bucket
+#   with one prefix per host (restic_bucket_prefix), where it can also damage other hosts' repos.
+#
+# restic_password must be UNIQUE per host. Keep an OFFLINE copy: losing it makes the backups
+# unrecoverable.
+# ---------------------------------------------------------------------------------------------
+restic_bucket: "" # the repository lives at the bucket root, or under restic_bucket_prefix
+restic_bucket_prefix: "" # "" for isolated buckets or e.g. "web01" for shared buckets
+restic_access_key_id: "" # token scoped to that bucket
+restic_secret_access_key: ""
+restic_password: ""
+
+# Any S3-compatible endpoint works: set restic_endpoint and restic_s3_region directly. The
+# Cloudflare R2 variables below only build the default endpoint. The append-only guarantee
+# itself is provider specific, see the README ("Other S3 providers").
+restic_endpoint: "https://{{ restic_r2_account_id }}{{ restic_r2_jurisdiction_suffix }}.r2.cloudflarestorage.com"
+restic_r2_jurisdiction_suffix: "{{ ('.' ~ restic_r2_jurisdiction) if restic_r2_jurisdiction | length > 0 else '' }}"
+restic_s3_region: auto # R2: "auto"; other providers need their real region
+restic_r2_account_id: ""
+restic_r2_jurisdiction: "" # "" (default), "eu" or "fedramp"; must match the bucket
+restic_repository_path: "{{ (('/' ~ restic_bucket_prefix) if restic_bucket_prefix | length > 0 else '') }}"
+restic_repository: "s3:{{ restic_endpoint }}/{{ restic_bucket }}{{ restic_repository_path }}"
+
+# Snapshot "host" tag. Snapshot filtering (restore test, parent snapshot lookup) follows this
+# name. Pin it in host_vars before renaming a host. The repository itself is chosen by
+# restic_bucket and restic_bucket_prefix, so a rename does not start a new repository.
+restic_snapshot_host: "{{ inventory_hostname }}"
+restic_compression: auto # auto | off | max
+
+# The role fails if it is older than this
+restic_min_version: "0.17.0"
+restic_apt_lock_timeout: 300 # seconds to wait for the dpkg/apt lock
+
+# ---------------------------------------------------------------------------------------------
+# Paths. All absolute. restic_bin_dir must already exist; the others are created.
+# ---------------------------------------------------------------------------------------------
+restic_config_dir: /etc/restic # env, password, excludes (mode 0700)
+restic_state_dir: /var/lib/restic # canary; writable for the backup job
+restic_lib_dir: /usr/local/lib/restic # shared shell helpers
+restic_bin_dir: /usr/local/sbin # restic-backup, restic-check, restic-restore-test
+restic_cache_dir: /var/cache/restic
+
+# ---------------------------------------------------------------------------------------------
+# What to back up
+# ---------------------------------------------------------------------------------------------
+restic_paths: [] # REQUIRED, absolute paths
+restic_excludes: []
+restic_one_file_system: false
+restic_limit_upload: 0 # KiB/s, 0 = unlimited
+
+# Run first as root, abort the job on failure (db dumps). They run before the credentials are
+# loaded into the environment (hygiene, not a security boundary: root can read the env file).
+# The default capability set below does not allow su/sudo/chown: widen it if you need those.
+restic_pre_commands: []
+
+# Directories the pre-commands may write to under the sandbox (ProtectSystem=strict). A leading
+# "-" is added, so missing directories are ignored.
+restic_backup_rw_paths:
+  - /var/backups
+
+# ---------------------------------------------------------------------------------------------
+# Jobs on one host never run at the same time; a job waits for the lock for up to
+# restic_lock_wait_seconds. The default is the longest job timeout, so a job can always outwait
+# any other job. The systemd unit allows <job timeout> + <lock wait>, so waiting never eats into
+# the time a job gets to run.
+# ---------------------------------------------------------------------------------------------
+restic_backup_schedule: "*-*-* 03:30:00"
+restic_backup_timeout_seconds: 43200 # 12h
+
+# Weekly integrity check. Rotates over weeks since the Unix epoch: run N reads slice
+# (N mod cycle)+1 of cycle, so every pack is read once per cycle. The schedule must fire at least
+# once every calendar week; a failed or skipped run skips its slice until the next cycle.
+# 0 = structure check only.
+restic_check_enabled: true
+restic_check_schedule: "Sun *-*-* 05:30:00"
+restic_check_timeout_seconds: 21600 # 6h
+restic_check_cycle_weeks: 12
+
+# Monthly restore test. Every backup first writes a fresh, self-verifying canary (timestamp,
+# random nonce, checksum) into restic_state_dir, so each snapshot contains new data. The test
+# restores the canary of the LATEST snapshot with --verify and validates its content. It does not
+# compare against the live file: that would fail whenever a backup stopped between writing the
+# canary and finishing the snapshot. It proves the repository can restore recent data, not that
+# every path of your real data restores; the weekly check covers the rest of the repository.
+restic_restore_test_enabled: true
+restic_restore_test_schedule: "*-*-01 06:30:00"
+restic_restore_test_timeout_seconds: 7200 # 2h
+
+# false = LOCKED mode: bucket lock applied outside the role, no prune job, clients never delete.
+# true  = CLIENT-PRUNE mode: no bucket lock, the role adds a weekly `forget --prune` job.
+restic_client_prune: false
+# Retention values apply ONLY in client-prune mode, per host (all snapshot groups of the host).
+# At least one keep value must be above 0.
+restic_prune_schedule: "Sat *-*-* 04:30:00"
+restic_prune_timeout_seconds: 21600 # 6h
+restic_keep_daily: 7
+restic_keep_weekly: 4
+restic_keep_monthly: 12
+restic_keep_yearly: 0
+
+restic_lock_wait_seconds: >-
+  {{ [restic_backup_timeout_seconds | int, restic_check_timeout_seconds | int,
+  restic_restore_test_timeout_seconds | int, restic_prune_timeout_seconds | int] | max }}
+
+# ---------------------------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------------------------
+# systemd unit started when a job fails, e.g. "notify-failure@%n.service". Empty = none.
+restic_onfailure_unit: ""
+restic_metrics_enabled: true
+restic_metrics_dir: /var/lib/prometheus/node-exporter
+restic_metrics_dir_mode: "0755"
+
+# ---------------------------------------------------------------------------------------------
+# Hardening. Seccomp/prctl options are always on.
+# restic_sandbox_enabled: the namespace sandbox (ProtectSystem=strict, PrivateTmp, ...) needs
+#   mount namespaces: in an unprivileged LXC container enable "nesting=1" or set this to false
+#   (otherwise the units fail with status 226/NAMESPACE).
+# restic_capability_bounding_set: the jobs still run as root (they must read every file and the
+#   restore runbook needs root), but with only these capabilities. DAC_READ_SEARCH lets restic
+#   read any file; DAC_OVERRIDE is for writing metrics into a directory owned by someone else
+#   (still limited to the writable paths by the sandbox). An empty list disables the restriction.
+# ---------------------------------------------------------------------------------------------
+restic_sandbox_enabled: true
+restic_capability_bounding_set:
+  - CAP_DAC_READ_SEARCH
+  - CAP_DAC_OVERRIDE

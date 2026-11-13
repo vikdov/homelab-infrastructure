@@ -1,0 +1,78 @@
+# shellcheck shell=bash
+# {{ ansible_managed }}
+# Helpers shared by the restic-* scripts. Sourced, never executed.
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+metrics_enabled={{ 1 if restic_metrics_enabled | bool else 0 }}
+metrics_dir={{ restic_metrics_dir | quote }}
+canary_file={{ restic_canary_path | quote }}
+snapshot_host={{ restic_snapshot_host | quote }}
+
+# write_prom <file> <line>...
+# Atomic replace, so the textfile collector never reads a half-written file.
+write_prom() {
+  [ "$metrics_enabled" = 1 ] || return 0
+  local f="$metrics_dir/$1"
+  shift
+  printf '%s\n' "$@" >"$f.tmp" && chmod 0644 "$f.tmp" && mv -f "$f.tmp" "$f"
+}
+
+# record_run <metric_prefix> <file_stem> <exit_code> <start_epoch> [<extra_ok_code>]
+# Always writes last-run metrics; writes the success timestamp for exit code 0, and also for
+# <extra_ok_code> when given (e.g. 3 for restic backup: snapshot created, some files unreadable).
+# The last-run exit code is always the real one, so the failure is still visible.
+record_run() {
+  local prefix=$1 stem=$2 code=$3 start=$4 extra_ok=${5:-} now
+  now=$(date +%s)
+  write_prom "$stem-last-run.prom" \
+    "${prefix}_last_run_exit_code $code" \
+    "${prefix}_last_run_timestamp_seconds $now" \
+    "${prefix}_last_run_duration_seconds $((now - start))"
+  if [ "$code" -eq 0 ] || { [ -n "$extra_ok" ] && [ "$code" -eq "$extra_ok" ]; }; then
+    write_prom "$stem.prom" "${prefix}_last_success_timestamp_seconds $now"
+  fi
+}
+
+# One lock for all jobs on this host. /run/restic is created by the units (RuntimeDirectory=,
+# preserved between runs: removing it would break the mutual exclusion, because a lock on a
+# deleted file locks nothing); mkdir is for manual runs.
+take_lock() {
+  install -d -m 0700 /run/restic
+  exec 9>/run/restic/lock
+  flock -w {{ restic_lock_wait_seconds | int }} 9
+}
+
+# load_env <file>: export the variables of an env file.
+load_env() {
+  set -a
+  # shellcheck source=/dev/null
+  . "$1"
+  set +a
+}
+
+# Self-verifying canary: host, UTC time, random nonce and a checksum over the three. Written
+# before every backup, so every snapshot holds new content (a static canary would deduplicate to
+# the oldest pack and the restore test would never touch recent data).
+canary_sum() {
+  printf '%s|%s|%s' "$1" "$2" "$3" | sha256sum | cut -d' ' -f1
+}
+
+write_canary() {
+  local now nonce
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  nonce=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  printf 'restic-canary-v1\nhost=%s\ntime=%s\nnonce=%s\nsha256=%s\n' \
+    "$snapshot_host" "$now" "$nonce" "$(canary_sum "$snapshot_host" "$now" "$nonce")" \
+    >"$canary_file.tmp"
+  mv -f "$canary_file.tmp" "$canary_file"
+}
+
+# verify_canary <file>: returns non-zero unless the content is intact and belongs to this host.
+verify_canary() {
+  local magic h t n s
+  { read -r magic && read -r h && read -r t && read -r n && read -r s; } <"$1" || return 1
+  [ "$magic" = restic-canary-v1 ] || return 1
+  [ "${h#host=}" = "$snapshot_host" ] || return 1
+  [ "${s#sha256=}" = "$(canary_sum "${h#host=}" "${t#time=}" "${n#nonce=}")" ]
+}

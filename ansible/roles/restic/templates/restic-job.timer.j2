@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for restic {{ job.name }}
+
+[Timer]
+OnCalendar={{ job.schedule }}
+RandomizedDelaySec={{ job.delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,17 @@
+---
+# Tags: restic_install, restic_config (incl. scripts), restic_units. Validation always runs.
+- name: Validate settings
+  ansible.builtin.import_tasks: validate.yml
+  tags: [always]
+
+- name: Install restic
+  ansible.builtin.import_tasks: install.yml
+  tags: [restic_install]
+
+- name: Configure restic and initialise the repository
+  ansible.builtin.import_tasks: configure.yml
+  tags: [restic_config]
+
+- name: Install systemd units and timers
+  ansible.builtin.import_tasks: units.yml
+  tags: [restic_units]

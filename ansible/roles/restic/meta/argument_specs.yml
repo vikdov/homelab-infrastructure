@@ -1,0 +1,56 @@
+---
+argument_specs:
+  main:
+    short_description: Append-only restic backups to an S3-compatible bucket (Cloudflare R2)
+    description:
+      - One bucket and one token per host. Defaults and documentation of every option are in
+        defaults/main.yml and the README; this spec only checks the types.
+    options:
+      restic_bucket: { type: str }
+      restic_access_key_id: { type: str }
+      restic_secret_access_key: { type: str }
+      restic_password: { type: str }
+      restic_bucket_prefix: { type: str }
+      restic_client_prune: { type: bool }
+      restic_endpoint: { type: str }
+      restic_s3_region: { type: str }
+      restic_r2_account_id: { type: str }
+      restic_r2_jurisdiction: { type: str, choices: ["", eu, fedramp] }
+      restic_repository: { type: str }
+      restic_snapshot_host: { type: str }
+      restic_compression: { type: str, choices: [auto, "off", max] }
+      restic_min_version: { type: str }
+      restic_apt_lock_timeout: { type: int }
+      restic_config_dir: { type: path }
+      restic_state_dir: { type: path }
+      restic_lib_dir: { type: path }
+      restic_bin_dir: { type: path }
+      restic_cache_dir: { type: path }
+      restic_paths: { type: list, elements: str }
+      restic_excludes: { type: list, elements: str }
+      restic_one_file_system: { type: bool }
+      restic_limit_upload: { type: int }
+      restic_pre_commands: { type: list, elements: str }
+      restic_backup_rw_paths: { type: list, elements: str }
+      restic_backup_schedule: { type: str }
+      restic_backup_timeout_seconds: { type: int }
+      restic_check_enabled: { type: bool }
+      restic_check_schedule: { type: str }
+      restic_check_timeout_seconds: { type: int }
+      restic_check_cycle_weeks: { type: int }
+      restic_restore_test_enabled: { type: bool }
+      restic_restore_test_schedule: { type: str }
+      restic_restore_test_timeout_seconds: { type: int }
+      restic_prune_schedule: { type: str }
+      restic_prune_timeout_seconds: { type: int }
+      restic_keep_daily: { type: int }
+      restic_keep_weekly: { type: int }
+      restic_keep_monthly: { type: int }
+      restic_keep_yearly: { type: int }
+      restic_lock_wait_seconds: { type: int }
+      restic_onfailure_unit: { type: str }
+      restic_metrics_enabled: { type: bool }
+      restic_metrics_dir: { type: path }
+      restic_metrics_dir_mode: { type: str }
+      restic_sandbox_enabled: { type: bool }
+      restic_capability_bounding_set: { type: list, elements: str }

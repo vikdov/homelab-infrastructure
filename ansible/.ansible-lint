@@ -12,3 +12,4 @@ skip_list:
   - meta-incorrect
   - meta-no-tags
   - meta-video-links
+  - var-naming[no-role-prefix]

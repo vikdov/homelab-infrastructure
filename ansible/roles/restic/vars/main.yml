@@ -1,0 +1,48 @@
+---
+# Derived values and the job table. Role vars (not defaults), so they are not meant to be
+# overridden; change the defaults they are built from.
+restic_canary_path: "{{ restic_state_dir }}/canary"
+
+# One entry per job. It drives the scripts, the systemd services and timers, the timer handling
+# and the cleanup of metrics of disabled jobs.
+#   home      ProtectHome of the sandbox: the backup must read /home and /root, the others need not
+#   rw_extra  additional writable directories under the sandbox
+#   metrics   file stem of the node_exporter textfile metrics
+#   timeout   seconds the job may run, once it holds the lock
+restic_jobs:
+  - name: backup
+    description: Restic backup
+    enabled: true
+    schedule: "{{ restic_backup_schedule }}"
+    delay: 20m
+    timeout: "{{ restic_backup_timeout_seconds }}"
+    home: read-only
+    rw_extra: "{{ [restic_state_dir] + restic_backup_rw_paths }}"
+    metrics: restic
+  - name: check
+    description: Restic repository integrity check
+    enabled: "{{ restic_check_enabled }}"
+    schedule: "{{ restic_check_schedule }}"
+    delay: 1h
+    timeout: "{{ restic_check_timeout_seconds }}"
+    home: "true"
+    rw_extra: []
+    metrics: restic-check
+  - name: restore-test
+    description: Restic restore test (canary, verified)
+    enabled: "{{ restic_restore_test_enabled }}"
+    schedule: "{{ restic_restore_test_schedule }}"
+    delay: 1h
+    timeout: "{{ restic_restore_test_timeout_seconds }}"
+    home: "true"
+    rw_extra: []
+    metrics: restic-restore-test
+  - name: prune
+    description: Restic forget and prune (client-prune mode)
+    enabled: "{{ restic_client_prune | bool }}"
+    schedule: "{{ restic_prune_schedule }}"
+    delay: 30m
+    timeout: "{{ restic_prune_timeout_seconds }}"
+    home: "true"
+    rw_extra: []
+    metrics: restic-prune

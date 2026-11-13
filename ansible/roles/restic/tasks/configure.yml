@@ -1,0 +1,98 @@
+---
+- name: Config directory
+  ansible.builtin.file:
+    path: "{{ restic_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Cache directory
+  ansible.builtin.file:
+    path: "{{ restic_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: State directory
+  ansible.builtin.file:
+    path: "{{ restic_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Helper library directory
+  ansible.builtin.file:
+    path: "{{ restic_lib_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Helper library
+  ansible.builtin.template:
+    src: restic-lib.sh.j2
+    dest: "{{ restic_lib_dir }}/lib.sh"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Metrics directory (node_exporter textfile collector)
+  ansible.builtin.file:
+    path: "{{ restic_metrics_dir }}"
+    state: directory
+    mode: "{{ restic_metrics_dir_mode }}"
+  when: restic_metrics_enabled | bool
+
+- name: Credentials
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ restic_config_dir }}/env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Repository password
+  ansible.builtin.copy:
+    dest: "{{ restic_config_dir }}/password"
+    content: "{{ restic_password }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Exclude list
+  ansible.builtin.copy:
+    dest: "{{ restic_config_dir }}/excludes"
+    content: "{{ restic_excludes | join('\n') }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+
+# `cat config` failing is treated as "repository missing". If init then fails too, the output of
+# `cat config` is shown so a credentials or network error is not mistaken for a missing repo.
+- name: Initialise the repository when absent
+  ansible.builtin.shell: |
+    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    set -a; . {{ (restic_config_dir ~ '/env') | quote }}; set +a
+    out=$(restic cat config 2>&1) && { echo EXISTS; exit 0; }
+    if restic init; then echo INITIALISED; else echo "restic cat config said: $out" >&2; exit 1; fi
+  args:
+    executable: /bin/bash
+  register: restic_init
+  changed_when: "'INITIALISED' in restic_init.stdout"
+
+- name: Scripts
+  ansible.builtin.template:
+    src: "restic-{{ job.name }}.j2"
+    dest: "{{ restic_bin_dir }}/restic-{{ job.name }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop: "{{ restic_jobs }}"
+  loop_control:
+    loop_var: job
+    label: "{{ job.name }}"

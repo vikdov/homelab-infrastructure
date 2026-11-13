@@ -1,0 +1,15 @@
+---
+# Order matters: reload first, then restart so changed schedules take effect.
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart restic timers
+  ansible.builtin.systemd:
+    name: "restic-{{ job.name }}.timer"
+    state: restarted
+  loop: "{{ restic_jobs }}"
+  loop_control:
+    loop_var: job
+    label: "{{ job.name }}"
+  when: job.enabled | bool and not ansible_check_mode

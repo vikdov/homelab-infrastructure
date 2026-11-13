@@ -1,0 +1,43 @@
+[Unit]
+Description={{ job.description }}
+After=network-online.target
+Wants=network-online.target
+{% if restic_onfailure_unit | length > 0 %}
+OnFailure={{ restic_onfailure_unit }}
+{% endif %}
+{% set rw_paths = [restic_cache_dir] + ([restic_metrics_dir] if restic_metrics_enabled | bool else []) + (job.rw_extra | map('regex_replace', '^', '-') | list) %}
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart={{ restic_bin_dir }}/restic-{{ job.name }}
+# Run time plus the time the job may wait for the host-wide lock (see restic_lock_wait_seconds).
+TimeoutStartSec={{ (job.timeout | int) + (restic_lock_wait_seconds | int) }}
+# Shared lock directory, kept between runs on purpose.
+RuntimeDirectory=restic
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+{% if restic_capability_bounding_set | length > 0 %}
+CapabilityBoundingSet={{ restic_capability_bounding_set | join(' ') }}
+{% endif %}
+{% if restic_sandbox_enabled | bool %}
+ProtectSystem=strict
+ProtectHome={{ job.home }}
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ReadWritePaths={{ rw_paths | join(' ') }}
+{% endif %}

@@ -1,0 +1,56 @@
+---
+- name: Systemd services
+  ansible.builtin.template:
+    src: restic-job.service.j2
+    dest: "/etc/systemd/system/restic-{{ job.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ restic_jobs }}"
+  loop_control:
+    loop_var: job
+    label: "{{ job.name }}"
+  notify:
+    - Reload systemd
+    - Restart restic timers
+
+- name: Systemd timers
+  ansible.builtin.template:
+    src: restic-job.timer.j2
+    dest: "/etc/systemd/system/restic-{{ job.name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ restic_jobs }}"
+  loop_control:
+    loop_var: job
+    label: "{{ job.name }}"
+  notify:
+    - Reload systemd
+    - Restart restic timers
+
+- name: Apply unit changes now
+  ansible.builtin.meta: flush_handlers
+
+# Units do not exist yet under --check on a fresh host. Disabled jobs get their timer stopped and
+# disabled.
+- name: Enable or disable timers
+  ansible.builtin.systemd:
+    name: "restic-{{ job.name }}.timer"
+    enabled: "{{ job.enabled | bool }}"
+    state: "{{ 'started' if job.enabled | bool else 'stopped' }}"
+  loop: "{{ restic_jobs }}"
+  loop_control:
+    loop_var: job
+    label: "{{ job.name }}"
+  when: not ansible_check_mode
+
+# A disabled job must not keep exposing an old success timestamp.
+- name: Remove metrics of disabled jobs
+  ansible.builtin.file:
+    path: "{{ restic_metrics_dir }}/{{ item.0.metrics }}{{ item.1 }}.prom"
+    state: absent
+  loop: "{{ restic_jobs | product(['', '-last-run']) | list }}"
+  loop_control:
+    label: "{{ item.0.metrics }}{{ item.1 }}.prom"
+  when: restic_metrics_enabled | bool and not item.0.enabled | bool

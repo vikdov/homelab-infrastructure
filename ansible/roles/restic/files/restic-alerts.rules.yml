@@ -1,0 +1,128 @@
+---
+# Prometheus alert rules for the restic role. Not deployed by the role: load into Prometheus and
+# restrict the selectors (job/instance) to your hosts.
+#
+# ResticBackupNeverReported selects hosts with up{job="node"}: change "node" to the name of your
+# node_exporter scrape job. With a wrong name the rule matches nothing and never fires.
+#
+# Two kinds of failure are covered on purpose:
+#   * the job ran and failed, or is overdue         -> *Failed / *Stale
+#   * the metrics vanished (host, timer or exporter dead) -> *MetricsGone / *NeverReported
+# A plain `time() - metric > X` rule alone is silent in the second case, because an absent series
+# produces nothing to compare.
+#
+# Backup exit code 3 (snapshot created, some files unreadable) counts as a successful backup for
+# ResticBackupStale and has its own, milder alert (ResticBackupPartial). The systemd unit still
+# ends up failed in that case, so restic_onfailure_unit fires as well.
+groups:
+  - name: restic
+    rules:
+      - alert: ResticBackupStale
+        expr: time() - restic_last_success_timestamp_seconds > 36 * 3600
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "No successful restic backup on {{ $labels.instance }} for over 36h"
+
+      - alert: ResticBackupMetricsGone
+        # Series existed within the last 3 days but is gone now. Also fires for a decommissioned
+        # host; it clears itself after 3 days.
+        expr: >-
+          last_over_time(restic_last_success_timestamp_seconds[3d])
+          unless on(instance) restic_last_success_timestamp_seconds
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: >-
+            restic backup metrics of {{ $labels.instance }} disappeared
+            (host, timer or exporter down?)
+
+      - alert: ResticBackupNeverReported
+        expr: >-
+          up{job="node"} == 1
+          unless on(instance) restic_last_success_timestamp_seconds
+        for: 2d
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} has no restic success metric"
+
+      - alert: ResticBackupFailed
+        expr: restic_last_run_exit_code != 0 and restic_last_run_exit_code != 3
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Last restic backup on {{ $labels.instance }} exited with {{ $value }}"
+
+      - alert: ResticBackupPartial
+        expr: restic_last_run_exit_code == 3
+        for: 30m
+        labels: { severity: info }
+        annotations:
+          summary: >-
+            Last restic backup on {{ $labels.instance }} was incomplete
+            (some files unreadable); the snapshot was kept
+
+      - alert: ResticCheckStale
+        expr: time() - restic_check_last_success_timestamp_seconds > 10 * 86400
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "No successful restic integrity check on {{ $labels.instance }} for over 10 days"
+
+      - alert: ResticCheckMetricsGone
+        expr: >-
+          last_over_time(restic_check_last_success_timestamp_seconds[14d])
+          unless on(instance) restic_check_last_success_timestamp_seconds
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "restic check metrics of {{ $labels.instance }} disappeared"
+
+      - alert: ResticCheckFailed
+        expr: restic_check_last_run_exit_code != 0
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: >-
+            restic integrity check on {{ $labels.instance }} failed:
+            the repository may be damaged
+
+      - alert: ResticRestoreTestStale
+        expr: time() - restic_restore_test_last_success_timestamp_seconds > 40 * 86400
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "No successful restic restore test on {{ $labels.instance }} for over 40 days"
+
+      - alert: ResticRestoreTestMetricsGone
+        expr: >-
+          last_over_time(restic_restore_test_last_success_timestamp_seconds[45d])
+          unless on(instance) restic_restore_test_last_success_timestamp_seconds
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "restic restore test metrics of {{ $labels.instance }} disappeared"
+
+      - alert: ResticRestoreTestFailed
+        expr: restic_restore_test_last_run_exit_code != 0
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: >-
+            restic restore test on {{ $labels.instance }} failed:
+            backups may not be restorable
+
+      # Only hosts in client-prune mode (restic_client_prune: true) have prune metrics.
+      - alert: ResticPruneStale
+        expr: time() - restic_prune_last_success_timestamp_seconds > 10 * 86400
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "No successful restic prune on {{ $labels.instance }} for over 10 days"
+
+      - alert: ResticPruneFailed
+        expr: restic_prune_last_run_exit_code != 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Last restic prune on {{ $labels.instance }} exited with {{ $value }}"

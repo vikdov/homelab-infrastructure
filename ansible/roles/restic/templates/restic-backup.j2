@@ -1,0 +1,48 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# shellcheck disable=SC2154
+set -euo pipefail
+# shellcheck source=/dev/null
+. {{ (restic_lib_dir ~ '/lib.sh') | quote }}
+{% set backup_paths = (restic_paths + ([restic_canary_path] if restic_restore_test_enabled | bool else [])) | unique | list %}
+
+start=$(date +%s)
+
+# Runs on every exit path (pre-command failure, backup failure, SIGTERM), so a failed run is
+# always visible in restic_last_run_exit_code. Exit code 3 (snapshot created, some files
+# unreadable) still counts as a successful backup for the success timestamp.
+on_exit() {
+  local code=$?
+  record_run restic restic "$code" "$start" 3 ||
+    echo "restic-backup: could not write metrics to $metrics_dir" >&2
+}
+trap on_exit EXIT
+trap 'exit 143' TERM INT
+
+take_lock
+start=$(date +%s)
+
+# Pre-commands run BEFORE the credentials are loaded, so database dump scripts do not inherit them.
+{% for c in restic_pre_commands %}
+{{ c }}
+{% endfor %}
+
+{% if restic_restore_test_enabled | bool %}
+write_canary
+{% endif %}
+load_env {{ (restic_config_dir ~ '/env') | quote }}
+
+# This script never runs forget or prune; pruning is a separate job (client-prune mode only).
+# Exit code 3 means the snapshot was created but some files were unreadable; it is passed through,
+# so the unit is marked failed while the snapshot is kept.
+restic backup \
+  --host "$snapshot_host" \
+  --exclude-caches \
+  --exclude-file {{ (restic_config_dir ~ '/excludes') | quote }} \
+{% if restic_one_file_system | bool %}
+  --one-file-system \
+{% endif %}
+{% if restic_limit_upload | int > 0 %}
+  --limit-upload {{ restic_limit_upload | int }} \
+{% endif %}
+  {{ backup_paths | map('quote') | join(' ') }}
