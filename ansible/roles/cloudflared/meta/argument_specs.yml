@@ -1,0 +1,57 @@
+---
+argument_specs:
+  main:
+    short_description: Cloudflare Tunnel (remotely managed) from the Cloudflare apt repository
+    options:
+      cloudflared_state:
+        type: str
+        default: present
+        choices: [present, absent]
+        description: Install and run the tunnel, or remove it.
+      cloudflared_version:
+        type: str
+        default: ""
+        description: Exact apt package version to install and pin.
+      cloudflared_token:
+        type: str
+        default: ""
+        no_log: true
+        description: Tunnel token (vault).
+      cloudflared_key_url:
+        type: str
+        default: https://pkg.cloudflare.com/cloudflare-main.gpg
+        description: Repository signing key URL.
+      cloudflared_key_sha256:
+        type: str
+        default: ""
+        description: Expected sha256 of the signing key file.
+      cloudflared_metrics:
+        type: str
+        default: "127.0.0.1:20241"
+        description: IPv4:port for metrics and /ready. Unauthenticated; 0.0.0.0 is rejected.
+      cloudflared_protocol:
+        type: str
+        default: auto
+        choices: [auto, quic, http2]
+        description: Transport protocol to the Cloudflare edge.
+      cloudflared_gomemlimit:
+        type: str
+        default: 128MiB
+        description: GOMEMLIMIT (soft Go heap target), for example 128MiB.
+      cloudflared_memory_max:
+        type: str
+        default: 256M
+        description: systemd MemoryMax (hard cgroup ceiling), for example 256M, or infinity.
+      cloudflared_egress_check:
+        type: bool
+        default: true
+        description: Probe outbound TCP 7844 to the Cloudflare edge before starting.
+      cloudflared_egress_hosts:
+        type: list
+        elements: str
+        default: [region1.v2.argotunnel.com, region2.v2.argotunnel.com]
+        description: Hosts probed by the egress preflight.
+      cloudflared_apt_lock_timeout:
+        type: int
+        default: 300
+        description: Seconds to wait for the dpkg/apt lock.

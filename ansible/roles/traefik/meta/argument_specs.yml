@@ -1,0 +1,159 @@
+---
+argument_specs:
+  main:
+    short_description: Traefik v3 edge proxy (wildcard ACME via Cloudflare DNS, optional tunnel entrypoint)
+    description:
+      - Requires gathered facts (architecture, date_time).
+    options:
+      traefik_version:
+        type: str
+        default: ""
+        description: Exact Traefik v3 release without a leading "v".
+      traefik_arch:
+        type: str
+        default: auto
+        choices: [auto, amd64, arm64]
+        description: Release architecture; auto derives it from ansible_architecture.
+      traefik_keep_versions:
+        type: int
+        default: 2
+        description: Installed versions kept under /opt/traefik (active + rollback).
+      traefik_apt_lock_timeout:
+        type: raw
+        default: 300
+        description: Seconds to wait for the apt lock.
+      traefik_cf_dns_token:
+        type: str
+        default: ""
+        no_log: true
+        description: >
+          Cloudflare API token for the DNS-01 challenge (Zone:DNS:Edit, plus
+          Zone:Zone:Read unless traefik_cf_zone_token is set).
+      traefik_cf_zone_token:
+        type: str
+        default: ""
+        no_log: true
+        description: Optional Cloudflare token with only Zone:Zone:Read.
+      traefik_log_level:
+        type: str
+        default: WARN
+        choices: [DEBUG, INFO, WARN, ERROR, FATAL, PANIC]
+        description: Traefik log level.
+      traefik_gomemlimit:
+        type: str
+        default: 96MiB
+        description: GOMEMLIMIT for the service.
+      traefik_metrics_address:
+        type: str
+        default: "127.0.0.1:8082"
+        description: Specific IPv4:port for /ping and Prometheus metrics (0.0.0.0 is refused).
+      traefik_tls_min_version:
+        type: str
+        default: VersionTLS12
+        choices: [VersionTLS12, VersionTLS13]
+        description: Minimum TLS version served.
+      traefik_access_log_enabled:
+        type: bool
+        default: true
+        description: JSON access log to stdout (journald).
+      traefik_access_log_status_codes:
+        type: list
+        elements: str
+        default: ["400-599"]
+        description: Only log these status code ranges. Empty logs everything.
+      traefik_domain:
+        type: str
+        default: ""
+        description: Base domain. Certificates cover it and its wildcard.
+      traefik_acme_email:
+        type: str
+        default: ""
+        description: ACME account contact.
+      traefik_acme_staging:
+        type: bool
+        default: true
+        description: Use the Let's Encrypt staging CA. Flipping it backs up and removes acme.json.
+      traefik_acme_resolvers:
+        type: list
+        elements: str
+        default: ["1.1.1.1:53", "1.0.0.1:53"]
+        description: DNS resolvers used to check challenge propagation.
+      traefik_acme_backups_keep:
+        type: int
+        default: 3
+        description: Timestamped acme.json backups kept after a CA switch.
+      traefik_secure_headers_enabled:
+        type: bool
+        default: true
+        description: Apply the secure-headers middleware to every router by default.
+      traefik_hsts_seconds:
+        type: int
+        default: 15552000
+        description: Strict-Transport-Security max-age.
+      traefik_authelia_enabled:
+        type: bool
+        default: false
+        description: Define the authelia forward-auth middleware.
+      traefik_authelia_url:
+        type: str
+        default: ""
+        description: Authelia base URL, http(s)://host[:port].
+      traefik_authelia_authz_path:
+        type: str
+        default: /api/authz/forward-auth
+        description: Authelia forward-auth endpoint path.
+      traefik_authelia_trust_forward_header:
+        type: bool
+        default: true
+        description: Forward incoming X-Forwarded-* headers to Authelia unchanged.
+      traefik_rate_limit_enabled:
+        type: bool
+        default: false
+        description: Define the rate-limit middleware.
+      traefik_rate_limit_average:
+        type: int
+        default: 100
+        description: Average requests per second per source.
+      traefik_rate_limit_burst:
+        type: int
+        default: 200
+        description: Burst size.
+      traefik_inflight_enabled:
+        type: bool
+        default: false
+        description: Define the in-flight middleware.
+      traefik_inflight_amount:
+        type: int
+        default: 100
+        description: Concurrent requests per source.
+      traefik_services:
+        type: list
+        elements: dict
+        default: []
+        description: Services published as https://<name>.<traefik_domain>.
+        options:
+          name:
+            type: str
+            required: true
+            description: DNS label.
+          upstream:
+            type: str
+            required: true
+            description: Backend as http(s)://host[:port].
+          public:
+            type: bool
+            default: false
+            description: Also route it on the tunnel entrypoint for cloudflared.
+          middlewares:
+            type: list
+            elements: str
+            default: []
+            description: Extra middlewares (authelia, rate-limit, in-flight), applied in order.
+          secure_headers:
+            type: bool
+            default: true
+            description: Apply the secure-headers middleware.
+          allow_public_unauthenticated:
+            type: bool
+            default: false
+            description: Permit public true without the authelia middleware.

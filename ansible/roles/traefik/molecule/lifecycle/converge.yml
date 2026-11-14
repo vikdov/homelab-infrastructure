@@ -1,0 +1,114 @@
+---
+# Upgrade, ACME CA switch, rollback and retention in one run. No idempotence step: the scenario
+# deliberately walks the host through state changes. The final flip to production contacts the
+# Let's Encrypt production directory once (account registration with the dummy domain fails).
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    traefik_cf_dns_token: molecule-dummy-token
+    traefik_domain: lab.test
+    traefik_acme_email: ops@lab.test
+    traefik_services:
+      - { name: internal, upstream: "http://127.0.0.1:9" }
+    traefik_lifecycle_seed: >-
+      {"le":{"Account":{"Registration":{"uri":"https://acme-staging-v02.api.letsencrypt.org/acme/acct/1"}}}}
+  tasks:
+    - name: 1 | Install the old release on staging
+      ansible.builtin.include_role:
+        name: traefik
+      vars:
+        traefik_version: "3.7.17"
+        traefik_acme_staging: true
+
+    - name: 1 | Seed a staging ACME store
+      ansible.builtin.copy:
+        dest: /var/lib/traefik/acme.json
+        content: "{{ traefik_lifecycle_seed }}"
+        owner: traefik
+        group: traefik
+        mode: "0600"
+
+    - name: 2 | Upgrade to the newer release, still staging
+      ansible.builtin.include_role:
+        name: traefik
+      vars:
+        traefik_version: "3.7.19"
+        traefik_acme_staging: true
+
+    - name: 2 | Upgrade moved the symlink and kept the ACME store
+      block:
+        - name: Stat the symlink and the store
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          register: traefik_lifecycle__stat
+          loop: [/usr/local/bin/traefik, /var/lib/traefik/acme.json]
+        - name: Assert
+          ansible.builtin.assert:
+            that:
+              - traefik_lifecycle__stat.results[0].stat.lnk_source == '/opt/traefik/3.7.19/traefik'
+              - traefik_lifecycle__stat.results[1].stat.exists
+            quiet: true
+
+    - name: 3 | Seed again so the CA switch has known content
+      ansible.builtin.copy:
+        dest: /var/lib/traefik/acme.json
+        content: "{{ traefik_lifecycle_seed }}"
+        owner: traefik
+        group: traefik
+        mode: "0600"
+
+    - name: 3 | Switch to the production CA
+      ansible.builtin.include_role:
+        name: traefik
+      vars:
+        traefik_version: "3.7.19"
+        traefik_acme_staging: false
+
+    - name: 3 | The old store was backed up, not lost
+      block:
+        - name: Find backups
+          ansible.builtin.find:
+            paths: /var/lib/traefik
+            patterns: "acme.json.staging.*.bak"
+          register: traefik_lifecycle__backups
+        - name: Read the backup
+          ansible.builtin.slurp:
+            src: "{{ traefik_lifecycle__backups.files[0].path }}"
+          register: traefik_lifecycle__backup
+          no_log: true
+          when: traefik_lifecycle__backups.matched == 1
+        - name: Read the marker
+          ansible.builtin.slurp:
+            src: /var/lib/traefik/.acme-ca
+          register: traefik_lifecycle__marker
+        - name: Assert
+          ansible.builtin.assert:
+            that:
+              - traefik_lifecycle__backups.matched == 1
+              - "'acme-staging-v02' in (traefik_lifecycle__backup.content | b64decode)"
+              - (traefik_lifecycle__marker.content | b64decode | trim) == 'production'
+            quiet: true
+
+    - name: 4 | Roll back to the old release and keep only one version
+      ansible.builtin.include_role:
+        name: traefik
+      vars:
+        traefik_version: "3.7.17"
+        traefik_acme_staging: false
+        traefik_keep_versions: 1
+
+    - name: 4 | Rollback moved the symlink and retention pruned the newer release
+      block:
+        - name: Stat the symlink and the pruned directory
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          register: traefik_lifecycle__rollback
+          loop: [/usr/local/bin/traefik, /opt/traefik/3.7.19]
+        - name: Assert
+          ansible.builtin.assert:
+            that:
+              - traefik_lifecycle__rollback.results[0].stat.lnk_source == '/opt/traefik/3.7.17/traefik'
+              - not traefik_lifecycle__rollback.results[1].stat.exists
+            quiet: true

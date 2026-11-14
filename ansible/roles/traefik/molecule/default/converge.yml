@@ -1,0 +1,25 @@
+---
+# Needs outbound access to github.com (release download) and the Debian mirrors.
+# The Cloudflare token is a dummy: Traefik starts and serves its default certificate, and the
+# ACME order simply fails, which is enough to test the plumbing without touching real accounts.
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    traefik_version: "3.7.17"
+    traefik_cf_dns_token: molecule-dummy-token
+    traefik_domain: lab.test
+    traefik_acme_email: ops@lab.test
+    traefik_acme_staging: true
+    traefik_authelia_enabled: true
+    traefik_authelia_url: http://127.0.0.1:9091
+    traefik_rate_limit_enabled: true
+    traefik_inflight_enabled: true
+    # Upstream port 9 (discard) is closed: a matched router answers 502, an unmatched host 404.
+    traefik_services:
+      - { name: internal, upstream: "http://127.0.0.1:9" }
+      - { name: open, upstream: "http://127.0.0.1:9", public: true, allow_public_unauthenticated: true }
+      - { name: guarded, upstream: "http://127.0.0.1:9", public: true, middlewares: [rate-limit, authelia] }
+  roles:
+    - role: traefik

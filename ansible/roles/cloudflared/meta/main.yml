@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: cloudflared
+  author: vikdov
+  description: Remotely managed Cloudflare Tunnel from the Cloudflare apt repository
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions: [bookworm, trixie]
+    - name: Ubuntu
+      versions: [jammy, noble]
+  galaxy_tags: [cloudflare, tunnel, edge]
+dependencies: []

@@ -1,0 +1,11 @@
+---
+# Internal values. Not meant to be overridden.
+traefik_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+traefik_arch_effective: >-
+  {{ traefik_arch if traefik_arch != 'auto'
+     else traefik_arch_map.get(ansible_facts.architecture | default(''), 'unsupported') }}
+traefik_release_url: "https://github.com/traefik/traefik/releases/download/v{{ traefik_version }}"
+traefik_known_middlewares: [authelia, rate-limit, in-flight]
+traefik_acme_ca_wanted: "{{ 'staging' if traefik_acme_staging | bool else 'production' }}"

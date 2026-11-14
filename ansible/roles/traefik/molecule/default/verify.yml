@@ -1,0 +1,91 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Service is enabled and active
+      ansible.builtin.command: "systemctl is-{{ item }} traefik" # noqa: command-instead-of-module
+      register: traefik_verify__state
+      changed_when: false
+      failed_when: traefik_verify__state.stdout != item
+      loop: [enabled, active]
+
+    - name: Health endpoint answers
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8082/ping
+        status_code: 200
+
+    - name: Tunnel entrypoint routes a public service (matched router, dead upstream -> 502)
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/
+        headers:
+          Host: open.lab.test
+        status_code: 502
+
+    - name: Tunnel entrypoint does not expose internal-only services
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/
+        headers:
+          Host: internal.lab.test
+        status_code: 404
+
+    - name: Tunnel entrypoint does not answer unknown hosts
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/
+        headers:
+          Host: unknown.lab.test
+        status_code: 404
+
+    - name: Protected public service does not reach its upstream without the auth service
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/
+        headers:
+          Host: guarded.lab.test
+        status_code: [401, 403, 500, 502]
+
+    - name: Active binary is the pinned release
+      ansible.builtin.stat:
+        path: /usr/local/bin/traefik
+      register: traefik_verify__link
+      failed_when: traefik_verify__link.stat.lnk_source | default('') != '/opt/traefik/3.7.17/traefik'
+
+    - name: Read the rendered configuration
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: traefik_verify__files
+      loop: [/etc/traefik/dynamic/services.yml, /etc/traefik/traefik.yml]
+
+    - name: Static and dynamic configuration are rendered as intended
+      vars:
+        traefik_verify__cfg: "{{ traefik_verify__files.results[0].content | b64decode | from_yaml }}"
+        traefik_verify__static: "{{ traefik_verify__files.results[1].content | b64decode | from_yaml }}"
+        traefik_verify__routers: "{{ traefik_verify__cfg.http.routers }}"
+        traefik_verify__mw: "{{ traefik_verify__cfg.http.middlewares }}"
+      ansible.builtin.assert:
+        that:
+          - traefik_verify__cfg.tls.options.default.minVersion == 'VersionTLS12'
+          - traefik_verify__routers.internal.entryPoints == ['websecure']
+          - traefik_verify__routers['open-public'].entryPoints == ['tunnel']
+          - "'internal-public' not in traefik_verify__routers"
+          - traefik_verify__routers['guarded-public'].middlewares == ['secure-headers', 'rate-limit', 'authelia']
+          - traefik_verify__mw.authelia.forwardAuth.address == 'http://127.0.0.1:9091/api/authz/forward-auth'
+          - traefik_verify__mw['rate-limit'].rateLimit.average == 100
+          - traefik_verify__mw['in-flight'].inFlightReq.amount == 100
+          - traefik_verify__cfg.http.services.open.loadBalancer.servers[0].url == 'http://127.0.0.1:9'
+          - traefik_verify__static.accessLog.filters.statusCodes == ['400-599']
+          - traefik_verify__static.entryPoints.tunnel.address == '127.0.0.1:8081'
+          - "'acme-staging-v02' in traefik_verify__static.certificatesResolvers.le.acme.caServer"
+
+    - name: ACME CA marker records staging
+      ansible.builtin.slurp:
+        src: /var/lib/traefik/.acme-ca
+      register: traefik_verify__marker
+      failed_when: (traefik_verify__marker.content | b64decode | trim) != 'staging'
+
+    - name: A fresh install leaves no ACME backups behind
+      ansible.builtin.find:
+        paths: /var/lib/traefik
+        patterns: "acme.json.*.bak"
+      register: traefik_verify__backups
+      failed_when: traefik_verify__backups.matched != 0

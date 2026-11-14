@@ -1,0 +1,78 @@
+---
+- name: Validate settings
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Install the release
+  ansible.builtin.import_tasks: install.yml
+
+# Runs before any configuration is rendered: it may stop the service and move acme.json away.
+- name: Reconcile the ACME store with the configured CA
+  ansible.builtin.import_tasks: acme.yml
+
+- name: Credentials for the DNS challenge (read by systemd as root)
+  ansible.builtin.copy:
+    dest: /etc/traefik/env
+    content: |
+      CF_DNS_API_TOKEN={{ traefik_cf_dns_token }}
+      {% if traefik_cf_zone_token | length > 0 %}
+      CF_ZONE_API_TOKEN={{ traefik_cf_zone_token }}
+      {% endif %}
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart traefik
+
+- name: Static configuration (needs a restart)
+  ansible.builtin.template:
+    src: traefik.yml.j2
+    dest: /etc/traefik/traefik.yml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart traefik
+
+- name: Dynamic configuration (the file provider watches it; no restart)
+  ansible.builtin.template:
+    src: services.yml.j2
+    dest: /etc/traefik/dynamic/services.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Systemd unit
+  ansible.builtin.template:
+    src: traefik.service.j2
+    dest: /etc/systemd/system/traefik.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart traefik
+
+# Flush before "started": on a first run the handler performs the single start.
+- name: Apply restarts before verifying
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Traefik
+  ansible.builtin.systemd:
+    name: traefik
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for the listeners
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ item }}"
+    timeout: 60
+  loop: [80, 443, 8081]
+
+- name: Health endpoint answers
+  ansible.builtin.uri:
+    url: "http://{{ traefik_metrics_address }}/ping"
+    status_code: 200
+  register: traefik_ping
+  until: traefik_ping.status == 200
+  retries: 10
+  delay: 3
+  changed_when: false

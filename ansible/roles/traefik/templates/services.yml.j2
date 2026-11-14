@@ -1,0 +1,72 @@
+# {{ ansible_managed }}
+# Dynamic configuration (file provider, watched: no restart needed).
+{% set has_middlewares = (traefik_secure_headers_enabled | bool) or (traefik_authelia_enabled | bool) or (traefik_rate_limit_enabled | bool) or (traefik_inflight_enabled | bool) %}
+tls:
+  options:
+    default:
+      minVersion: {{ traefik_tls_min_version }}
+      # The wildcard certificate is matched by SNI; refuse connections without a matching name.
+      sniStrict: true
+{% if traefik_services | length > 0 %}
+http:
+{% if has_middlewares %}
+  middlewares:
+{% if traefik_secure_headers_enabled | bool %}
+    secure-headers:
+      headers:
+        stsSeconds: {{ traefik_hsts_seconds | int }}
+        contentTypeNosniff: true
+        customFrameOptionsValue: SAMEORIGIN
+        referrerPolicy: strict-origin-when-cross-origin
+{% endif %}
+{% if traefik_rate_limit_enabled | bool %}
+    # Behind the tunnel every request comes from 127.0.0.1, so there it limits per service.
+    rate-limit:
+      rateLimit:
+        average: {{ traefik_rate_limit_average | int }}
+        burst: {{ traefik_rate_limit_burst | int }}
+        period: 1s
+{% endif %}
+{% if traefik_inflight_enabled | bool %}
+    in-flight:
+      inFlightReq:
+        amount: {{ traefik_inflight_amount | int }}
+{% endif %}
+{% if traefik_authelia_enabled | bool %}
+    authelia:
+      forwardAuth:
+        address: "{{ traefik_authelia_url }}{{ traefik_authelia_authz_path }}"
+        trustForwardHeader: {{ traefik_authelia_trust_forward_header | bool | lower }}
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]
+{% endif %}
+{% endif %}
+  routers:
+{% for svc in traefik_services %}
+{% set chain = ((['secure-headers'] if ((traefik_secure_headers_enabled | bool) and (svc.secure_headers | default(true) | bool)) else []) + (svc.middlewares | default([]))) %}
+    {{ svc.name }}:
+      rule: "Host(`{{ svc.name }}.{{ traefik_domain }}`)"
+      entryPoints: [websecure]
+      service: {{ svc.name }}
+{% if chain | length > 0 %}
+      middlewares: {{ chain | to_json }}
+{% endif %}
+      tls: {}
+{% if svc.public | default(false) | bool %}
+    {{ svc.name }}-public:
+      # Plain-HTTP loopback entrypoint used by cloudflared (TLS ends at Cloudflare).
+      rule: "Host(`{{ svc.name }}.{{ traefik_domain }}`)"
+      entryPoints: [tunnel]
+      service: {{ svc.name }}
+{% if chain | length > 0 %}
+      middlewares: {{ chain | to_json }}
+{% endif %}
+{% endif %}
+{% endfor %}
+  services:
+{% for svc in traefik_services %}
+    {{ svc.name }}:
+      loadBalancer:
+        servers:
+          - url: "{{ svc.upstream }}"
+{% endfor %}
+{% endif %}

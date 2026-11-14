@@ -1,0 +1,61 @@
+---
+# --- Required (the role refuses to run without valid values) -----------------
+# Exact Traefik v3 release, e.g. "3.7.17" (no leading "v").
+traefik_version: ""
+# Cloudflare API token (vault). Needs Zone:DNS:Edit and Zone:Zone:Read, see README.
+traefik_cf_dns_token: ""
+traefik_domain: ""
+traefik_acme_email: ""
+
+# --- Install ----------------------------------------------------------------
+traefik_arch: auto # auto (from ansible_architecture) | amd64 | arm64
+# Installed versions kept under /opt/traefik (the active one + N-1 for rollback).
+traefik_keep_versions: 2
+traefik_apt_lock_timeout: "{{ bootstrap_apt_lock_timeout | default(300) }}"
+
+# --- Runtime ----------------------------------------------------------------
+traefik_log_level: WARN
+traefik_gomemlimit: 96MiB
+# /ping and Prometheus metrics. Loopback by default; set a specific management-interface
+# address (e.g. "10.10.10.5:8082") so the monitoring host can scrape it. 0.0.0.0 is refused.
+traefik_metrics_address: "127.0.0.1:8082"
+traefik_tls_min_version: VersionTLS12
+# JSON access log to stdout (journald). Traefik drops headers by default, so cookies and
+# Authorization never reach the log. Empty list = log every request.
+traefik_access_log_enabled: true
+traefik_access_log_status_codes: ["400-599"]
+
+# --- ACME -------------------------------------------------------------------
+# Staging first. Switching this flag later backs up and removes acme.json (see README).
+traefik_acme_staging: true
+traefik_acme_resolvers: ["1.1.1.1:53", "1.0.0.1:53"]
+# Optional second token with only Zone:Zone:Read. When set, traefik_cf_dns_token needs only
+# Zone:DNS:Edit. When empty, traefik_cf_dns_token needs both permissions.
+traefik_cf_zone_token: ""
+# Timestamped acme.json backups kept after a CA switch.
+traefik_acme_backups_keep: 3
+
+# --- HTTP behaviour ---------------------------------------------------------
+traefik_secure_headers_enabled: true
+traefik_hsts_seconds: 15552000 # 180 days
+traefik_authelia_enabled: false
+traefik_authelia_url: "" # e.g. http://10.10.10.20:9091
+traefik_authelia_authz_path: /api/authz/forward-auth # Authelia >= 4.38
+# Pass incoming X-Forwarded-* headers to Authelia untouched. Safe here: "websecure" trusts no
+# upstream proxy (Traefik overwrites those headers) and "tunnel" trusts loopback only.
+traefik_authelia_trust_forward_header: true
+# Opt-in middlewares, referenced per service as "rate-limit" / "in-flight".
+traefik_rate_limit_enabled: false
+traefik_rate_limit_average: 100 # requests per second per source
+traefik_rate_limit_burst: 200
+traefik_inflight_enabled: false
+traefik_inflight_amount: 100 # concurrent requests per source
+
+# --- Routing ----------------------------------------------------------------
+# - name: str                         -> https://<name>.<traefik_domain>
+#   upstream: http(s)://host[:port]
+#   public: false                     -> also reachable through the tunnel entrypoint
+#   middlewares: []                   -> any of [authelia, rate-limit, in-flight], applied in order
+#   secure_headers: true
+#   allow_public_unauthenticated: false  (required to publish without the authelia middleware)
+traefik_services: []

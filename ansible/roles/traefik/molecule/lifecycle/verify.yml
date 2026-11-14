@@ -1,0 +1,22 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Service is active after the whole lifecycle
+      ansible.builtin.command: systemctl is-active traefik # noqa: command-instead-of-module
+      register: traefik_verify__state
+      changed_when: false
+      failed_when: traefik_verify__state.stdout != 'active'
+
+    - name: Health endpoint answers
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8082/ping
+        status_code: 200
+
+    - name: ACME CA marker records production
+      ansible.builtin.slurp:
+        src: /var/lib/traefik/.acme-ca
+      register: traefik_verify__marker
+      failed_when: (traefik_verify__marker.content | b64decode | trim) != 'production'

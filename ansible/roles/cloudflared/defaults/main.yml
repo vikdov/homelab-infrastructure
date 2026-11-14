@@ -1,0 +1,37 @@
+---
+# present: install and run the tunnel. absent: stop it and remove everything this role installed.
+# Never skipped silently: with "present" a missing token fails the run.
+cloudflared_state: present
+
+# Exact package version from pkg.cloudflare.com, e.g. "2026.10.7". Pinned via apt preferences too,
+# so `apt upgrade` and unattended-upgrades cannot move it.
+cloudflared_version: ""
+# Tunnel token (vault). Written to /etc/cloudflared/token (0600) and handed to the service with
+# systemd LoadCredential=, so it is never part of the process environment.
+cloudflared_token: ""
+
+cloudflared_key_url: https://pkg.cloudflare.com/cloudflare-main.gpg
+# sha256 of the signing key file (fail closed if Cloudflare rotates it).
+# Obtain from a trusted machine:  curl -fsSL <cloudflared_key_url> | sha256sum
+cloudflared_key_sha256: ""
+
+# Metrics + /ready. Loopback by default; set a management-interface address for scraping.
+# The listener is unauthenticated (it also serves debug endpoints): never use 0.0.0.0.
+cloudflared_metrics: "127.0.0.1:20241"
+
+# auto (QUIC, falls back to HTTP/2) | quic | http2. Use http2 if UDP 7844 is blocked.
+cloudflared_protocol: auto
+
+# Soft Go heap target and hard cgroup ceiling. Measure after go-live (README, "Memory").
+cloudflared_gomemlimit: 128MiB
+cloudflared_memory_max: 256M
+
+# Preflight: outbound TCP 7844 to the Cloudflare edge (the HTTP/2 fallback path). Catches a
+# closed firewall before the tunnel is started. QUIC (UDP 7844) cannot be probed this way.
+cloudflared_egress_check: true
+cloudflared_egress_hosts:
+  - region1.v2.argotunnel.com
+  - region2.v2.argotunnel.com
+
+# Reuses the bootstrap role's value when present.
+cloudflared_apt_lock_timeout: "{{ bootstrap_apt_lock_timeout | default(300) }}"

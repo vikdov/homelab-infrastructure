@@ -1,0 +1,8 @@
+---
+# Traefik cannot reload its static config, so the binary, unit and static config need a restart.
+# The dynamic configuration is watched by the file provider and needs no handler.
+- name: Restart traefik
+  ansible.builtin.systemd:
+    name: traefik
+    state: restarted
+    daemon_reload: true

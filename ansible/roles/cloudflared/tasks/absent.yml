@@ -1,0 +1,42 @@
+---
+# Removes the tunnel client from this host. It does not revoke the token: rotate or delete the
+# tunnel in the Cloudflare dashboard as well.
+- name: Check for an existing unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/cloudflared.service
+  register: cloudflared_unit_file
+
+- name: Stop and disable the service
+  ansible.builtin.systemd:
+    name: cloudflared
+    state: stopped
+    enabled: false
+  when: cloudflared_unit_file.stat.exists
+
+- name: Remove the files this role created
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/cloudflared.service
+    - /etc/cloudflared.env
+    - /etc/cloudflared
+    - /etc/apt/preferences.d/cloudflared
+    - /etc/apt/sources.list.d/cloudflared.sources
+    - /usr/share/keyrings/cloudflare-main.gpg
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Remove the package
+  ansible.builtin.apt:
+    name: cloudflared
+    state: absent
+    purge: true
+    lock_timeout: "{{ cloudflared_apt_lock_timeout }}"
+
+- name: Remove the service user
+  ansible.builtin.user:
+    name: cloudflared
+    state: absent
