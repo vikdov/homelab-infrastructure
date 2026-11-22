@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: traefik
-  author: homelab
+  author: vikdov
   description: Traefik v3 edge proxy with wildcard ACME (Cloudflare DNS-01) and an optional loopback tunnel entrypoint
   license: MIT # adjust to your repository license
   min_ansible_version: "2.15"

@@ -59,7 +59,9 @@
       Signed-By: /usr/share/keyrings/cloudflare-main.gpg
   register: cloudflared_repo
 
-- name: Pin the package version (priority above 1000 also permits a rollback)
+# Prevent apt upgrade / unattended-upgrades from drifting off the tested version;
+# priority > 1000 also permits downgrading during a rollback.
+- name: Pin the package version
   ansible.builtin.copy:
     dest: /etc/apt/preferences.d/cloudflared
     owner: root
