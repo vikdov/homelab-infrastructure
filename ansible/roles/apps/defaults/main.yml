@@ -1,0 +1,78 @@
+---
+apps_domain: ""
+# Must be a non-wildcard, non-loopback IPv4 address: docker publishes the app ports on it.
+# Falls back to the inventory name so that a missing ansible_host reaches the "Require settings"
+# assertion (which rejects non-IPv4 values with a readable message) instead of an undefined-variable error.
+apps_bind: "{{ ansible_host | default(inventory_hostname) }}"
+apps_data_root: /srv/apps
+apps_media_root: "{{ apps_data_root }}"
+# Optional external host/group variable `bootstrap_timezone` sets the default when defined.
+apps_timezone: "{{ bootstrap_timezone | default('UTC') }}"
+# REQUIRED, no default because it is site-specific: the addresses the edge proxy connects from, as the
+# apps see them (e.g. its LAN and dmz addresses). Nextcloud and Immich trust them as proxies and the
+# firewall lets only them reach the published ports from the network.
+apps_edge_proxies: []
+
+# Docker publishes ports through the FORWARD chain, so host INPUT rules do not apply to them.
+# When enabled, only the edge proxies can reach the published app ports through that path.
+# (Connections originating on this host itself, such as the role's health checks, never traverse
+# FORWARD/DOCKER-USER and are not affected; apps_bind in the allowed list is therefore harmless but not
+# what makes them work.)
+apps_firewall_enabled: true
+apps_firewall_allowed_sources: "{{ (apps_edge_proxies + [apps_bind]) | unique }}"
+
+# Host ports published by the stacks. Single source of truth for compose, health checks and firewall.
+nextcloud_port: 8080
+immich_port: 2283
+# Always both ports, whatever *_enabled says: disabling an app does not stop its container,
+# so its port must stay protected.
+apps_published_ports: ["{{ nextcloud_port }}", "{{ immich_port }}"]
+
+# Per-container log rotation (the default json-file driver never rotates).
+apps_log_max_size: 10m
+apps_log_max_file: "3"
+
+# Put Nextcloud in maintenance mode for the duration of the backup, so files and DB dump match.
+# Needs the restic role to run restic_post_commands even when the backup fails (see host_vars);
+# otherwise leave it off.
+apps_backup_nextcloud_maintenance: false
+
+# NOTE on all *_mem_limit values below: they are hard cgroup caps. A container that exceeds its cap is
+# OOM-killed, not throttled. Size them from observed peaks (docker stats, and the OOMKilled / RestartCount
+# fields of docker inspect), especially during large imports and uploads.
+
+nextcloud_enabled: true
+nextcloud_version: ""
+# Changing the Postgres major version is a dump/restore, not a tag change.
+# Note: official postgres:18+ images move PGDATA to a versioned path under /var/lib/postgresql,
+# so update the .../nextcloud/db bind mount before upgrading to 18+.
+nextcloud_postgres_version: "17"
+nextcloud_redis_version: "7"
+# Full image references. Override with a digest to pin exactly, e.g. "postgres:17-alpine@sha256:<digest>".
+nextcloud_image: "nextcloud:{{ nextcloud_version }}-apache"
+nextcloud_postgres_image: "postgres:{{ nextcloud_postgres_version }}-alpine"
+nextcloud_redis_image: "redis:{{ nextcloud_redis_version }}-alpine"
+nextcloud_admin_user: admin
+nextcloud_admin_password: ""
+nextcloud_php_memory_limit: 512M
+nextcloud_php_upload_limit: 16G
+nextcloud_mem_limit: 1g
+nextcloud_db_mem_limit: 256m
+nextcloud_redis_mem_limit: 96m
+# nextcloud.env (including PHP_MEMORY_LIMIT) is shared by the app and cron containers, so this cap
+# must stay above nextcloud_php_memory_limit plus PHP/busybox overhead, or heavy background jobs are
+# OOM-killed instead of failing with a clean PHP memory error.
+nextcloud_cron_mem_limit: 640m
+
+immich_enabled: true
+immich_version: ""
+immich_server_image: "ghcr.io/immich-app/immich-server:{{ immich_version }}"
+immich_ml_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}"
+immich_postgres_image: ""
+immich_redis_image: docker.io/valkey/valkey:8-bookworm
+# Initial imports (thumbnails, video transcoding, metadata extraction) can exceed this; monitor via docker stats.
+immich_server_mem_limit: 1g
+# Sized for initial smart-search/face ML model inference and vector indexing; monitor via docker stats.
+immich_ml_mem_limit: 2g
+immich_db_mem_limit: 1g
+immich_redis_mem_limit: 128m

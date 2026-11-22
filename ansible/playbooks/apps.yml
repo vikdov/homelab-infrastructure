@@ -1,0 +1,17 @@
+---
+- name: Apps | Docker, Nextcloud, Immich
+  hosts: apps
+  gather_facts: false
+  pre_tasks:
+    - name: Wait for the guest (it is on-demand - qm start 200 first)
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+      tags: [always]
+    - name: Gather facts
+      ansible.builtin.setup:
+      tags: [always]
+  roles:
+    - role: docker
+      tags: [docker]
+    - role: apps
+      tags: [apps]

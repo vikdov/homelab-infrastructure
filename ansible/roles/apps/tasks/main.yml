@@ -1,0 +1,172 @@
+---
+# No no_log here: the conditions never print values, and no_log would hide fail_msg.
+- name: Require settings
+  ansible.builtin.assert:
+    that:
+      - apps_domain is match(apps_domain_re)
+      - apps_bind is match(apps_ipv4_re)
+      - apps_bind is not match('^(0\.0\.0\.0|127\.)')
+      - apps_edge_proxies | length > 0
+      - apps_edge_proxies | reject('match', apps_ipv4_re) | list | length == 0
+      - not apps_firewall_enabled | bool or apps_firewall_allowed_sources | length > 0
+      - >-
+        not apps_firewall_enabled | bool or
+        apps_firewall_allowed_sources | reject('match', apps_ipv4_re) | list | length == 0
+      - >-
+        not nextcloud_enabled | bool or
+        (
+          nextcloud_version | string is match(apps_nc_version_re) and
+          nextcloud_admin_password | length > 0 and
+          nextcloud_admin_password is not search("'")
+        )
+      - >-
+        not immich_enabled | bool or
+        (
+          immich_version | string is match(apps_immich_version_re) and
+          immich_postgres_image | length > 0 and
+          immich_postgres_image is not search('[<>\s]')
+        )
+    fail_msg: >-
+      Set a valid hostname apps_domain, a non-wildcard and non-loopback IPv4 apps_bind,
+      apps_edge_proxies (IPv4 list), apps_firewall_allowed_sources (IPv4 list, non-empty when the
+      firewall is enabled), exact image versions (Nextcloud like 32.0.1, Immich like v2.1.0 - no
+      latest/major-only tags), a real immich_postgres_image (no <placeholders>), and a Nextcloud
+      admin password without single quotes.
+    quiet: true
+  vars:
+    apps_domain_re: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'
+    # No leading zeros: iptables (inet_aton) would read "010" as octal.
+    apps_ipv4_re: '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'
+    apps_nc_version_re: '^[0-9]+(\.[0-9]+){2}$'
+    apps_immich_version_re: '^v[0-9]+\.[0-9]+\.[0-9]+$'
+  tags: [always]
+
+- name: Media root must be a real mount when it is separate
+  ansible.builtin.assert:
+    that: apps_media_root in (ansible_facts.mounts | map(attribute='mount') | list)
+    fail_msg: >-
+      apps_media_root ({{ apps_media_root }}) must be a mounted filesystem
+      when separate from apps_data_root.
+    quiet: true
+  when: apps_media_root != apps_data_root
+  tags: [always]
+
+# Without this, a reboot with the disk missing would let the containers write the library to the root disk.
+# Trade-off: if the disk is missing, docker (and so every app) does not start.
+# RequiresMountsFor only protects if systemd knows a mount unit for the path (normally an /etc/fstab entry).
+- name: Docker drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: apps_media_root != apps_data_root
+
+- name: Docker waits for the media mount at boot
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker.service.d/apps-media-mount.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible
+      [Unit]
+      RequiresMountsFor={{ apps_media_root }}
+  when: apps_media_root != apps_data_root
+  register: apps_media_dropin
+
+- name: Remove the media mount drop-in when the media root is not separate
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d/apps-media-mount.conf
+    state: absent
+  when: apps_media_root == apps_data_root
+  register: apps_media_dropin_removed
+
+- name: Reload systemd after a drop-in change
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: apps_media_dropin is changed or apps_media_dropin_removed is changed
+
+- name: Base directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /opt/apps, mode: "0750" }
+    - { path: "{{ apps_data_root }}", mode: "0755" }
+    - { path: "{{ apps_data_root }}/secrets", mode: "0700" }
+    - { path: "{{ apps_data_root }}/backup", mode: "0700" }
+  tags: [always]
+
+# Called by the restic role: "pre" dumps the databases, "post" ends Nextcloud maintenance mode.
+- name: Backup helper
+  ansible.builtin.template:
+    src: apps-backup.sh.j2
+    dest: /opt/apps/backup.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Restrict published ports to the edge proxies
+  ansible.builtin.import_tasks: firewall.yml
+  when: apps_firewall_enabled | bool
+  tags: [firewall]
+
+# Generated once, never overwritten. They are backed up with the apps_data_root.
+# No no_log here: output goes directly to disk, so secrets never appear in logs while OS errors stay visible.
+- name: Generate database passwords (hex, safe in env files)
+  ansible.builtin.shell: |
+    set -eo pipefail
+    umask 077
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > '{{ apps_data_root }}/secrets/{{ item }}.tmp'
+    mv '{{ apps_data_root }}/secrets/{{ item }}.tmp' '{{ apps_data_root }}/secrets/{{ item }}'
+  args:
+    executable: /bin/bash
+    creates: "{{ apps_data_root }}/secrets/{{ item }}"
+  loop: [nextcloud_db, immich_db]
+  tags: [always]
+
+- name: Read them
+  ansible.builtin.slurp:
+    src: "{{ apps_data_root }}/secrets/{{ item }}"
+  loop: [nextcloud_db, immich_db]
+  register: apps_secret_files
+  no_log: true
+  tags: [always]
+
+- name: Make them available as apps_pw
+  ansible.builtin.set_fact:
+    apps_pw: >-
+      {{
+        dict(
+          apps_secret_files.results | map(attribute='item')
+          | zip(apps_secret_files.results | map(attribute='content') | map('b64decode') | map('trim'))
+        )
+      }}
+  no_log: true
+  tags: [always]
+
+# No no_log here: loops over secret names only, so fail_msg remains readable on error.
+- name: Secrets must be 64 hex characters (a truncated file would otherwise be permanent)
+  ansible.builtin.assert:
+    that: apps_pw[item] is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      Secret file {{ item }} under {{ apps_data_root }}/secrets is malformed;
+      fix or delete it (only before first use).
+    quiet: true
+  loop: [nextcloud_db, immich_db]
+  tags: [always]
+
+- name: Nextcloud
+  ansible.builtin.import_tasks: nextcloud.yml
+  when: nextcloud_enabled | bool
+  tags: [nextcloud]
+
+- name: Immich
+  ansible.builtin.import_tasks: immich.yml
+  when: immich_enabled | bool
+  tags: [immich]

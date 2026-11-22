@@ -1,0 +1,2 @@
+---
+vault_nextcloud_admin_password: "..."   # avoid single quotes in it

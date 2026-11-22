@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Called by the restic role: "pre" before the backup, "post" after it.
+set -euo pipefail
+umask 077
+
+OUT="{{ apps_data_root }}/backup"
+NC=(docker compose -f /opt/apps/nextcloud/compose.yaml)
+IM=(docker compose -f /opt/apps/immich/compose.yaml)
+maintenance=0
+dumping=0
+
+# If "pre" fails, remove half-written dumps and do not leave Nextcloud in maintenance mode.
+cleanup() {
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$dumping" -eq 1 ]; then
+      rm -f "$OUT"/*.tmp
+    fi
+    if [ "$maintenance" -eq 1 ]; then
+      "${NC[@]}" exec -T -u www-data app php occ maintenance:mode --off || true
+    fi
+  fi
+}
+trap cleanup EXIT
+
+# dump_to FILE COMMAND... : gzip the command's output into FILE.
+# With pipefail a failing dump aborts the script, and the temp file means a failed dump
+# never replaces the last good one.
+dump_to() {
+  local file="$1"
+  shift
+  "$@" | gzip >"$file.tmp"
+  gzip -t "$file.tmp"
+  mv "$file.tmp" "$file"
+}
+
+case "${1:-}" in
+pre)
+  install -d -m 0700 "$OUT"
+  dumping=1
+  rm -f "$OUT"/*.tmp
+  {% if nextcloud_enabled | bool and apps_backup_nextcloud_maintenance | bool %}
+  maintenance=1
+  "${NC[@]}" exec -T -u www-data app php occ maintenance:mode --on
+  {% endif %}
+  {% if nextcloud_enabled | bool %}
+  # Enabled: a missing or stopped database container must fail the backup loudly.
+  dump_to "$OUT/nextcloud.sql.gz" "${NC[@]}" exec -T db pg_dump -U nextcloud nextcloud
+  {% else %}
+  # Disabled does not stop containers: if the database is still running, dump it anyway,
+  # because a file-level copy of a live PGDATA is not a usable backup.
+  if [ -n "$("${NC[@]}" ps --status running -q db 2>/dev/null)" ]; then
+    dump_to "$OUT/nextcloud.sql.gz" "${NC[@]}" exec -T db pg_dump -U nextcloud nextcloud
+  fi
+  {% endif %}
+  {% if immich_enabled | bool %}
+  dump_to "$OUT/immich.sql.gz" "${IM[@]}" exec -T database pg_dumpall --clean --if-exists --username=immich
+  {% else %}
+  if [ -n "$("${IM[@]}" ps --status running -q database 2>/dev/null)" ]; then
+    dump_to "$OUT/immich.sql.gz" "${IM[@]}" exec -T database pg_dumpall --clean --if-exists --username=immich
+  fi
+  {% endif %}
+  dumping=0
+  ;;
+post)
+  {% if nextcloud_enabled | bool and apps_backup_nextcloud_maintenance | bool %}
+  "${NC[@]}" exec -T -u www-data app php occ maintenance:mode --off
+  {% else %}
+  :
+  {% endif %}
+  ;;
+*)
+  echo "usage: $0 pre|post" >&2
+  exit 2
+  ;;
+esac

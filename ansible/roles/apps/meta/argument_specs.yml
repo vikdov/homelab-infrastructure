@@ -1,0 +1,134 @@
+---
+argument_specs:
+  main:
+    short_description: Nextcloud and Immich behind an edge reverse proxy
+    options:
+      apps_domain:
+        type: str
+        description: "Base domain (valid DNS hostname); Nextcloud is served as cloud.<domain>."
+      apps_bind:
+        type: str
+        description: >-
+          Non-wildcard, non-loopback IPv4 address the app ports are published on
+          (defaults to ansible_host).
+      apps_data_root:
+        type: path
+        description: "Databases, app code, secrets and SQL dumps."
+      apps_media_root:
+        type: path
+        description: "Photo library and Nextcloud data; must be a mountpoint when separate from apps_data_root."
+      apps_timezone:
+        type: str
+        description: "Container timezone (defaults to bootstrap_timezone if defined, else UTC)."
+      apps_edge_proxies:
+        type: list
+        elements: str
+        description: "IPv4 addresses the edge proxy connects from, as seen by the apps. Required, non-empty."
+      apps_firewall_enabled:
+        type: bool
+        description: "Restrict the published ports to the allowed sources via DOCKER-USER."
+      apps_firewall_allowed_sources:
+        type: list
+        elements: str
+        description: "IPv4 sources allowed through the firewall (non-empty when the firewall is enabled)."
+      apps_published_ports:
+        type: list
+        elements: int
+        description: >-
+          Host ports protected by the firewall (both apps, always).
+          Do not override unless you also change the port variables."
+      apps_log_max_size:
+        type: str
+        description: "json-file max-size per container."
+      apps_log_max_file:
+        type: str
+        description: "json-file max-file per container."
+      apps_backup_nextcloud_maintenance:
+        type: bool
+        description: "Maintenance mode during backups; needs restic post commands to run even on failure."
+      nextcloud_enabled:
+        type: bool
+        description: "Deploy Nextcloud and dump its database. Setting false does not stop existing containers."
+      nextcloud_version:
+        type: str
+        description: "Exact version, e.g. 32.0.1. Required when enabled."
+      nextcloud_port:
+        type: int
+        description: "IPv4 host port published on apps_bind."
+      nextcloud_postgres_version:
+        type: str
+        description: "Postgres major version used to build the default image reference."
+      nextcloud_redis_version:
+        type: str
+        description: "Redis major version used to build the default image reference."
+      nextcloud_image:
+        type: str
+        description: "Full Nextcloud image reference (override to pin a digest)."
+      nextcloud_postgres_image:
+        type: str
+        description: "Full Postgres image reference (override to pin a digest)."
+      nextcloud_redis_image:
+        type: str
+        description: "Full Redis image reference (override to pin a digest)."
+      nextcloud_admin_user:
+        type: str
+        description: "Initial administrator user; letters, digits and _ . @ - only (checked on first install)."
+      nextcloud_admin_password:
+        type: str
+        no_log: true
+        description: "Required when enabled; no single quotes."
+      nextcloud_php_memory_limit:
+        type: str
+        description: "PHP memory_limit for the app and cron containers; keep below nextcloud_cron_mem_limit."
+      nextcloud_php_upload_limit:
+        type: str
+        description: "PHP upload limit; the edge proxy must enforce its own limit."
+      nextcloud_mem_limit:
+        type: str
+        description: "Hard memory cap of the app container (OOM-kill on excess)."
+      nextcloud_db_mem_limit:
+        type: str
+        description: "Hard memory cap of the database container."
+      nextcloud_redis_mem_limit:
+        type: str
+        description: "Hard memory cap of the Redis container."
+      nextcloud_cron_mem_limit:
+        type: str
+        description: >-
+          Hard memory cap of the cron container; must exceed
+          nextcloud_php_memory_limit.
+      immich_enabled:
+        type: bool
+        description: "Deploy Immich and dump its database. Setting false does not stop existing containers."
+      immich_version:
+        type: str
+        description: "Exact version with leading v, e.g. v2.1.0. Required when enabled."
+      immich_port:
+        type: int
+        description: "IPv4 host port published on apps_bind."
+      immich_server_image:
+        type: str
+        description: "Full Immich server image reference."
+      immich_ml_image:
+        type: str
+        description: "Full Immich machine-learning image reference."
+      immich_postgres_image:
+        type: str
+        description: >-
+          Copy the database image line from Immich's compose file for that
+          release. Required when enabled.
+      immich_redis_image:
+        type: str
+        description: "Full Valkey/Redis image reference for Immich."
+      immich_server_mem_limit:
+        type: str
+        description: "Hard memory cap of the server container (OOM-kill on excess)."
+      immich_ml_mem_limit:
+        type: str
+        description: "Hard memory cap of the machine-learning container."
+      immich_db_mem_limit:
+        type: str
+        description: "Hard memory cap of the database container."
+      immich_redis_mem_limit:
+        type: str
+        description: "Hard memory cap of the Valkey/Redis container."

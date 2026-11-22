@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: apps
+  author: vikdov
+  description: >-
+    Nextcloud and Immich (Docker Compose) behind an edge reverse proxy,
+    with a DOCKER-USER firewall and restic backup hooks.
+  license: proprietary
+  min_ansible_version: "2.15"
+  # Compose v2.24+ and Restart= on a Type=oneshot unit rule out old Debian releases.
+  # Adjust this list to the releases you actually test.
+  platforms:
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: []
+# The docker role must run before this one (see playbooks/apps.yml). It is deliberately not a
+# dependency: a dependency would inherit this role's tags and change what `--tags apps` runs.
+dependencies: []
