@@ -1,0 +1,40 @@
+---
+# Runs against a DISPOSABLE Debian 12/13 VM you provide (docker-in-docker is a poor fit for
+# systemd + dockerd + compose, so containers are deliberately not used as the test instance).
+# Required environment:
+#   MOLECULE_TARGET_HOST          IP/hostname of the throwaway VM (SSH as root, or set MOLECULE_TARGET_USER)
+#   MOLECULE_VAULTWARDEN_VERSION  image tag to test
+#   MOLECULE_AUTHELIA_VERSION     image tag to test
+#   MOLECULE_AUTHELIA_TEST_HASH   argon2id hash, e.g.
+#     docker run --rm authelia/authelia:<tag> authelia crypto hash generate argon2 --password 'test-password'
+# Optional:
+#   MOLECULE_AUTHELIA_TEST_PASSWORD  the plaintext behind TEST_HASH; enables the real first-factor login test
+#   MOLECULE_VAULTWARDEN_UPGRADE_VERSION, MOLECULE_AUTHELIA_UPGRADE_VERSION  enable the image-upgrade test
+#   MOLECULE_VAULTWARDEN_TEST_ADMIN_HASH  a REAL Vaultwarden argon2 admin-token hash; enables the
+#     ADMIN_TOKEN quoting test (dollar signs must survive env_file parsing), e.g.
+#     docker run --rm -it vaultwarden/server:<tag> /vaultwarden hash
+#   MOLECULE_REQUIRE_FULL=true  refuse to run unless every optional variable above is set, so a
+#     release run cannot go green while silently skipping login, admin-token or upgrade coverage.
+# Input validation is tested separately, without a VM:  molecule test -s validation
+driver:
+  name: default
+  options:
+    managed: false
+platforms:
+  - name: identity-test
+    hostname: "{{ lookup('env', 'MOLECULE_TARGET_HOST') }}"
+    user: "{{ lookup('env', 'MOLECULE_TARGET_USER') | default('root', true) }}"
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  inventory:
+    host_vars:
+      identity-test:
+        ansible_host: "${MOLECULE_TARGET_HOST}"
+        ansible_user: "${MOLECULE_TARGET_USER:-root}"
+scenario:
+  # idempotence = converge a second time and fail on any changed task.
+  test_sequence: [syntax, converge, idempotence, side_effect, verify]
+verifier:
+  name: ansible

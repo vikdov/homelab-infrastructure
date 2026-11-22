@@ -1,0 +1,17 @@
+---
+identity_domain: example.com
+test_vaultwarden_version: "{{ lookup('ansible.builtin.env', 'MOLECULE_VAULTWARDEN_VERSION') }}"
+test_authelia_version: "{{ lookup('ansible.builtin.env', 'MOLECULE_AUTHELIA_VERSION') }}"
+vaultwarden_version: "{{ test_vaultwarden_version }}"
+authelia_version: "{{ test_authelia_version }}"
+# Tests may use tag-only images; production must not (default true).
+identity_require_image_digest: false
+# Exercise the DOCKER-USER ingress filter. A documentation address (RFC 5737): nothing real
+# is allowed, and host-originated health checks do not traverse FORWARD, so the tests still work.
+identity_allowed_sources: ["192.0.2.10"]
+authelia_users:
+  tester:
+    displayname: Tester
+    email: tester@example.com
+    groups: [admins]
+    password: "{{ lookup('ansible.builtin.env', 'MOLECULE_AUTHELIA_TEST_HASH') }}"

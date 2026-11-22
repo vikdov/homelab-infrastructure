@@ -1,0 +1,73 @@
+---
+# identity-backup-dump writes /srv/identity/backup/last-success, but nothing noticed when it stopped
+# being called (restic job removed, hook broken, dump failing). This timer turns that into a failed
+# unit plus a journal error, which any monitoring that watches systemd or the journal can alert on.
+
+- name: Check for an installed backup monitor
+  ansible.builtin.stat:
+    path: /etc/systemd/system/identity-backup-check.timer
+  register: identity_backup_timer
+
+- name: Install and enable the backup monitor
+  when: identity_backup_check_enabled | bool
+  block:
+    - name: Install the backup freshness check
+      ansible.builtin.template:
+        src: identity-backup-check.sh.j2
+        dest: /usr/local/sbin/identity-backup-check
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Install the backup check service and timer
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - identity-backup-check.service
+        - identity-backup-check.timer
+
+    # Before the first dump there is no last-success; the check measures age from this marker,
+    # so a fresh install gets a grace period instead of an immediate alert.
+    - name: Record when monitoring started (only if missing)
+      ansible.builtin.copy:
+        content: ""
+        dest: /srv/identity/backup/.installed
+        force: false
+        owner: identity
+        group: identity
+        mode: "0600"
+
+    - name: Enable the backup check timer
+      ansible.builtin.systemd:
+        name: identity-backup-check.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+- name: Remove the backup monitor when disabled
+  when:
+    - not (identity_backup_check_enabled | bool)
+    - identity_backup_timer.stat.exists
+  block:
+    - name: Disable the backup check timer
+      ansible.builtin.systemd:
+        name: identity-backup-check.timer
+        enabled: false
+        state: stopped
+
+    - name: Delete the backup monitor files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/identity-backup-check.timer
+        - /etc/systemd/system/identity-backup-check.service
+        - /usr/local/sbin/identity-backup-check
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

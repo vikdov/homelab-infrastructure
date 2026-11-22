@@ -1,0 +1,26 @@
+---
+# `--check` needs the objects the role creates (the service account, the compose project) to
+# exist, otherwise ownership tasks and the compose module fail for reasons that say nothing about
+# the change under test. On a host that already runs the stack, check mode covers everything. On a
+# fresh host only validation and the preflight run, and the role says so instead of failing late.
+- name: Look up the service account (read-only, so it also runs in check mode)
+  ansible.builtin.getent:
+    database: passwd
+    key: identity
+    fail_key: false
+  register: identity_account
+  check_mode: false
+  when: ansible_check_mode
+
+- name: Look for an existing deployment
+  ansible.builtin.stat:
+    path: /opt/identity/compose.yaml
+  register: identity_compose_file
+
+# `and` short-circuits, so identity_account is only read in check mode, where it is registered.
+- name: Decide whether check mode can cover the whole role
+  ansible.builtin.set_fact:
+    identity_check_limited: >-
+      {{ ansible_check_mode and
+         ((identity_account.ansible_facts.getent_passwd.identity | default(none)) is none
+          or not identity_compose_file.stat.exists) }}

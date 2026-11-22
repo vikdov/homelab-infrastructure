@@ -1,0 +1,21 @@
+---
+- name: Identity | Docker, Vaultwarden, Authelia
+  hosts: identity
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for the guest
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+      tags: [always]
+
+    - name: Gather facts
+      ansible.builtin.setup:
+      tags: [always]
+
+  roles:
+    - role: docker
+      tags: [docker]
+    - role: identity
+      tags: [identity]

@@ -1,0 +1,107 @@
+---
+# --- Identity / networking ---------------------------------------------------
+identity_domain: ""
+# Address the two ports are published on. Must be a specific IPv4 that exists on
+# this host, never 0.0.0.0. Override in host_vars on multi-homed machines: the
+# default is the address of the default-route interface.
+identity_bind: "{{ (ansible_facts.get('default_ipv4') | default({})).get('address', '') }}"
+identity_vaultwarden_port: 8080
+identity_authelia_port: 9091
+
+# Sources (IPv4 or CIDR) allowed to reach the two published ports, enforced in
+# Docker's DOCKER-USER chain. Docker's published ports bypass the host's INPUT
+# rules, so host nftables alone does NOT protect them. Normally this is the edge
+# proxy address. Empty = no filtering by this role (exposure then relies entirely
+# on the hypervisor firewall; see README "Network exposure").
+identity_allowed_sources: []
+
+# --- Service account (containers run as this uid:gid, never root) -------------
+identity_uid: 10010
+identity_gid: 10010
+
+# --- Images (REQUIRED: "x.y.z" or "x.y.z@sha256:<64 hex>", never a floating tag)
+vaultwarden_version: ""
+authelia_version: ""
+# Refuse tag-only images. Tags are mutable; digests are not. Disable only in tests.
+identity_require_image_digest: true
+
+# --- Runtime -------------------------------------------------------------------
+identity_timezone: "{{ bootstrap_timezone | default('UTC') }}"
+identity_pids_limit: 200
+identity_vaultwarden_mem_limit: 256m
+identity_authelia_mem_limit: 512m # argon2 uses 64 MiB per concurrent login
+identity_log_max_size: 10m
+identity_log_max_file: 5
+
+# Explicit healthchecks (do not depend on what the upstream image bakes in).
+identity_vaultwarden_healthcheck: ["CMD", "/healthcheck.sh"]
+identity_authelia_healthcheck: ["CMD", "/app/healthcheck.sh"]
+identity_healthcheck_interval: 30s
+identity_healthcheck_timeout: 5s
+identity_healthcheck_retries: 3
+identity_healthcheck_start_period: 30s
+
+# --- Backup monitoring -----------------------------------------------------------
+# identity-backup-check.timer (hourly) fails, and logs an error to the journal, when the last
+# successful dump is older than this or a dump is missing. Set it above your backup interval
+# (26 suits a daily job). Before the first dump the age is measured from the install time.
+identity_backup_check_enabled: true
+identity_backup_max_age_hours: 26
+
+# --- Vaultwarden ---------------------------------------------------------------
+vaultwarden_signups_allowed: false
+vaultwarden_invitations_allowed: true
+# Empty disables /admin. Otherwise an argon2 PHC string ("$argon2...").
+vaultwarden_admin_token: ""
+
+# Features. Off or restricted by default; enable deliberately.
+vaultwarden_sends_allowed: false
+# Emergency access hands a vault to a designated contact after a waiting period and relies on
+# mail for its notifications, so it follows SMTP: off without a mail relay, on with one.
+vaultwarden_emergency_access_allowed: "{{ vaultwarden_smtp_host | length > 0 }}"
+vaultwarden_password_hints_allowed: false
+# "" = everyone may create orgs, "none" = nobody, or comma-separated admin emails.
+vaultwarden_org_creation_users: ""
+# The internal icon fetcher makes outbound requests to arbitrary domains (SSRF surface,
+# leaks which sites are stored). false = generic icons, no fetching, no cache expiry.
+vaultwarden_icons_enabled: false
+
+# Login rate limit (login and 2FA share the burst budget; keep >= 2).
+vaultwarden_login_ratelimit_seconds: 60
+vaultwarden_login_ratelimit_max_burst: 5
+
+# Mail (invitations, device and 2FA emails). Empty host = mail disabled.
+vaultwarden_smtp_host: ""
+vaultwarden_smtp_port: 465
+vaultwarden_smtp_security: force_tls # starttls | force_tls ("off" is refused)
+vaultwarden_smtp_from: "vault@{{ identity_domain }}"
+vaultwarden_smtp_from_name: Vaultwarden
+vaultwarden_smtp_username: ""
+vaultwarden_smtp_password: ""
+# Only meaningful when mail works; only matters while signups are open.
+vaultwarden_signups_verify: "{{ vaultwarden_smtp_host | length > 0 }}"
+# A login fails if the notification email fails, so this stays off by default; enable it only
+# once mail delivery is proven reliable (validation requires an SMTP host when it is on).
+vaultwarden_require_device_email: false
+
+# --- Authelia ------------------------------------------------------------------
+authelia_default_policy: two_factor
+authelia_log_level: info
+authelia_session_expiration: 12h
+authelia_session_inactivity: 30m
+authelia_session_remember_me: 1M
+# Domains the proxy must NOT put behind Authelia (Vaultwarden clients can't do SSO).
+authelia_bypass_domains:
+  - "vault.{{ identity_domain }}"
+# Source of truth is Ansible. Format:
+#   name: {displayname, email, password (argon2id hash), groups: []}
+authelia_users: {}
+
+# Notifier: filesystem (one-time links in /srv/identity/authelia/data/notification.txt) unless SMTP is set.
+authelia_smtp_address: "" # e.g. submission://smtp.example.com:587
+authelia_smtp_username: ""
+authelia_smtp_password: ""
+authelia_smtp_sender: "Authelia <auth@{{ identity_domain }}>"
+# Authelia dials the SMTP server at startup and refuses to start if it is down.
+# Leave false in production; true only for tests with an unreachable relay.
+authelia_notifier_disable_startup_check: false

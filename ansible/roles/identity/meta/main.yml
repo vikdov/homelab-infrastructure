@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: vikdov
+  description: Vaultwarden and Authelia behind a TLS-terminating edge proxy
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [docker, vaultwarden, authelia, identity]
+# The `docker` role must run first (see playbooks/identity.yml). It is deliberately
+# not a meta dependency, so `--tags identity` stays fast; tasks/preflight.yml fails
+# early and clearly if Docker Compose is missing.
+# Required collections: see ansible/requirements.yml.
+dependencies: []

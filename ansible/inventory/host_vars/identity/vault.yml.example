@@ -1,0 +1,20 @@
+---
+# Admin token hash:  docker run --rm -it vaultwarden/server:<X.Y.Z> /vaultwarden hash
+# Password hash:     docker run --rm -it authelia/authelia:<X.Y.Z> authelia crypto hash generate argon2
+#
+# Keep these out of the password manager they enable: if mail or the vault breaks,
+# you must still be able to recover them.
+
+vault_vaultwarden_admin_token: "" # empty = /admin disabled; otherwise an $argon2... PHC string
+
+# SMTP passwords: use a SEPARATE key per service at the provider, so one can be
+# revoked or leaked without affecting the other. Required only when that service's SMTP host/address is set.
+vault_vaultwarden_smtp_password: ""
+vault_authelia_smtp_password: ""
+
+vault_authelia_users:
+  alice:
+    displayname: "Alice Example"
+    email: "alice@example.com"
+    password: "$argon2id$v=19$m=65536,t=3,p=4$REPLACE_ME"
+    groups: [admins]

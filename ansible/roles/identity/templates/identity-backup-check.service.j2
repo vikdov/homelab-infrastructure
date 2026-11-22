@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Check that the identity backup is fresh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/identity-backup-check

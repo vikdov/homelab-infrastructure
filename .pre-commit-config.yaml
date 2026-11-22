@@ -134,14 +134,19 @@ repos:
   # ---------------------------------------------------------------------------
   # 5. Ansible
   # ---------------------------------------------------------------------------
+  # Runs only on staged files under ansible/. Switching CWD into ansible/ ensures
+  # ansible-lint loads ansible/.ansible-lint and ansible/ansible.cfg; the leading
+  # `ansible/` prefix is stripped from each staged path, and `--` preserves $1.
+  # require_serial prevents pre-commit from spawning parallel uv/ansible-lint runs.
   - repo: local
     hooks:
       - id: ansible-lint
         name: ansible-lint
-        entry: uv run --locked ansible-lint
+        entry: bash -c 'cd ansible && exec uv run --locked ansible-lint "${@/#ansible\//}"' --
         language: system
+        files: ^ansible/
         pass_filenames: true
-        files: "^ansible/"
+        require_serial: true
   # ---------------------------------------------------------------------------
   # 6. Guards and linters (binaries come from mise)
   # ---------------------------------------------------------------------------

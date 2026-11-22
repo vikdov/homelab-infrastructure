@@ -1,0 +1,93 @@
+---
+# Docker's published ports are DNAT-ed and forwarded, so they bypass the host's INPUT
+# chain (and therefore any "input" nftables/ufw policy). The only host-side hook that
+# Docker leaves to the operator is the DOCKER-USER chain. This restricts the two
+# published ports to identity_allowed_sources. Traffic originated on the host itself
+# (health checks, Ansible) never traverses FORWARD and is unaffected.
+#
+# Runs BEFORE the stack starts during a playbook run (on boot, the unit runs
+# After=docker.service; keep the hypervisor firewall enabled as primary control).
+
+- name: Warn when no guest-side ingress filter is configured
+  ansible.builtin.debug:
+    msg: >-
+      identity_allowed_sources is empty: the published ports rely solely on the
+      hypervisor firewall.
+  when: identity_allowed_sources | length == 0
+
+- name: Check for an installed ingress filter unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/identity-ingress.service
+  register: identity_ingress_unit
+
+- name: Check for an installed ingress filter script
+  ansible.builtin.stat:
+    path: /usr/local/sbin/identity-ingress
+  register: identity_ingress_script
+
+- name: Install and enable the ingress filter
+  when: identity_allowed_sources | length > 0
+  block:
+    - name: Install iptables
+      ansible.builtin.apt:
+        name: iptables
+        state: present
+        cache_valid_time: 3600
+
+    - name: Install the ingress filter script
+      ansible.builtin.template:
+        src: identity-ingress.sh.j2
+        dest: /usr/local/sbin/identity-ingress
+        owner: root
+        group: root
+        mode: "0750"
+      notify: identity ingress filter changed
+
+    - name: Install the ingress filter unit
+      ansible.builtin.template:
+        src: identity-ingress.service.j2
+        dest: /etc/systemd/system/identity-ingress.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: identity ingress filter changed
+
+    - name: Enable and start the ingress filter
+      ansible.builtin.systemd:
+        name: identity-ingress.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+- name: Remove the ingress filter when no sources are configured
+  when:
+    - identity_allowed_sources | length == 0
+    - identity_ingress_unit.stat.exists or identity_ingress_script.stat.exists
+  block:
+    - name: Remove the iptables rules
+      ansible.builtin.command: /usr/local/sbin/identity-ingress remove
+      changed_when: true
+      when: identity_ingress_script.stat.exists
+
+    - name: Disable the ingress filter
+      ansible.builtin.systemd:
+        name: identity-ingress.service
+        enabled: false
+        state: stopped
+      when: identity_ingress_unit.stat.exists
+
+    - name: Delete the ingress filter files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/identity-ingress.service
+        - /usr/local/sbin/identity-ingress
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+# The rules must be in place before containers publish their ports.
+- name: Apply any pending ingress filter change now
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,38 @@
+---
+- name: Render compose project
+  ansible.builtin.template:
+    src: compose.yaml.j2
+    dest: /opt/identity/compose.yaml
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Start the stack (waits for container healthchecks)
+  community.docker.docker_compose_v2:
+    project_src: /opt/identity
+    state: present
+    remove_orphans: true
+    wait: true
+    wait_timeout: 180
+
+- name: Wait for Vaultwarden to answer on the published address
+  ansible.builtin.uri:
+    url: "http://{{ identity_bind }}:{{ identity_vaultwarden_port }}/alive"
+    status_code: 200
+  register: identity_vw_alive
+  until: identity_vw_alive.status == 200
+  retries: 20
+  delay: 3
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait for Authelia to answer on the published address
+  ansible.builtin.uri:
+    url: "http://{{ identity_bind }}:{{ identity_authelia_port }}/api/health"
+    status_code: 200
+  register: identity_authelia_health
+  until: identity_authelia_health.status == 200
+  retries: 20
+  delay: 3
+  changed_when: false
+  when: not ansible_check_mode

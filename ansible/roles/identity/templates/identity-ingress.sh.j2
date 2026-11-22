@@ -1,0 +1,66 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Restrict the published identity ports to the allowed sources in Docker's DOCKER-USER
+# chain. Idempotent: "apply" replaces the contents of the dedicated chain in ONE atomic
+# iptables-restore transaction (no window with an empty chain, no temporary chain that an
+# interrupted run could leave referenced); "remove" deletes it.
+# Matching uses the conntrack ORIGINAL destination (pre-DNAT), so it keys on the
+# published host ports, not on the container ports or container addresses.
+set -euo pipefail
+
+chain=IDENTITY-INGRESS
+# Temporary chain name used by earlier versions of this script; cleaned up on apply/remove.
+legacy_tmp_chain="${chain}-NEW"
+bind={{ identity_bind }}
+ports=({{ identity_vaultwarden_port }} {{ identity_authelia_port }})
+sources=({% for s in identity_allowed_sources %}{{ s | quote }} {% endfor %})
+
+# -w: wait for the xtables lock (dockerd edits iptables concurrently, notably at boot).
+ipt() { iptables -w 10 "$@"; }
+
+# Inputs are validated by the role (IPv4 / CIDR only), so plain interpolation is safe here.
+rules() {
+  local port src
+  echo "*filter"
+  # Declaring an existing user chain under --noflush resets only that chain.
+  echo ":${chain} - [0:0]"
+  echo "-A ${chain} -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
+  for port in "${ports[@]}"; do
+    for src in "${sources[@]}"; do
+      echo "-A ${chain} -s ${src} -p tcp -m conntrack --ctorigdst ${bind} --ctorigdstport ${port} -j RETURN"
+    done
+    echo "-A ${chain} -p tcp -m conntrack --ctorigdst ${bind} --ctorigdstport ${port} -j DROP"
+  done
+  echo "-A ${chain} -j RETURN"
+  echo "COMMIT"
+}
+
+drop_legacy_tmp_chain() {
+  while ipt -D DOCKER-USER -j "$legacy_tmp_chain" 2>/dev/null; do :; done
+  ipt -F "$legacy_tmp_chain" 2>/dev/null || true
+  ipt -X "$legacy_tmp_chain" 2>/dev/null || true
+}
+
+apply() {
+  if ! ipt -n -L DOCKER-USER >/dev/null 2>&1; then
+    echo "identity-ingress: DOCKER-USER chain not found (is Docker running with the iptables backend?)" >&2
+    exit 1
+  fi
+
+  drop_legacy_tmp_chain
+  rules | iptables-restore -w 10 --noflush
+  ipt -C DOCKER-USER -j "$chain" 2>/dev/null || ipt -I DOCKER-USER 1 -j "$chain"
+}
+
+remove() {
+  while ipt -D DOCKER-USER -j "$chain" 2>/dev/null; do :; done
+  ipt -F "$chain" 2>/dev/null || true
+  ipt -X "$chain" 2>/dev/null || true
+  drop_legacy_tmp_chain
+}
+
+case "${1:-apply}" in
+  apply) apply ;;
+  remove) remove ;;
+  *) echo "usage: $0 [apply|remove]" >&2; exit 2 ;;
+esac

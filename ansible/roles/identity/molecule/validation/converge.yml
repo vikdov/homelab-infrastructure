@@ -1,0 +1,302 @@
+---
+- name: Validation | the role accepts good input and rejects bad input with a precise message
+  hosts: all
+  gather_facts: false
+  vars:
+    digest: "@sha256:{{ '0' * 64 }}"
+    baseline: &baseline
+      identity_domain: example.com
+      identity_bind: 192.0.2.10
+      identity_allowed_sources: ["192.0.2.1", "198.51.100.0/24"]
+      identity_require_image_digest: true
+      identity_vaultwarden_port: 8080
+      identity_authelia_port: 9091
+      identity_uid: 10010
+      vaultwarden_version: "1.2.3{{ digest }}"
+      vaultwarden_smtp_host: ""
+      vaultwarden_smtp_from: ""
+      vaultwarden_smtp_security: force_tls
+      vaultwarden_smtp_username: ""
+      vaultwarden_smtp_password: ""
+      vaultwarden_require_device_email: false
+      vaultwarden_org_creation_users: ""
+      vaultwarden_admin_token: ""
+      authelia_version: "4.5.6{{ digest }}"
+      authelia_default_policy: two_factor
+      authelia_smtp_address: ""
+      authelia_smtp_password: ""
+      authelia_smtp_sender: "Authelia <auth@example.com>"
+      authelia_log_level: info
+      authelia_session_expiration: 12h
+      authelia_session_inactivity: 30m
+      authelia_session_remember_me: 1M
+      authelia_bypass_domains: ["vault.example.com"]
+      identity_timezone: UTC
+      identity_pids_limit: 200
+      identity_vaultwarden_mem_limit: 256m
+      identity_authelia_mem_limit: 512m
+      identity_log_max_size: 10m
+      identity_log_max_file: 5
+      identity_healthcheck_interval: 30s
+      identity_healthcheck_timeout: 5s
+      identity_healthcheck_retries: 3
+      identity_healthcheck_start_period: 30s
+      vaultwarden_login_ratelimit_seconds: 60
+      vaultwarden_login_ratelimit_max_burst: 5
+      identity_backup_max_age_hours: 26
+      authelia_users:
+        alice:
+          displayname: Alice
+          email: alice@example.com
+          password: "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$cmVwbGFjZW1l"
+    cases:
+      - name: empty domain
+        expect: identity_domain
+        vars:
+          identity_domain: ""
+      - name: uppercase domain
+        expect: identity_domain
+        vars:
+          identity_domain: Example.com
+      - name: single-label domain
+        expect: identity_domain
+        vars:
+          identity_domain: localhost
+      - name: same port twice
+        expect: distinct
+        vars:
+          identity_vaultwarden_port: 9000
+          identity_authelia_port: 9000
+      - name: port out of range
+        expect: distinct
+        vars:
+          identity_authelia_port: 70000
+      - name: bind on all interfaces
+        expect: identity_bind
+        vars:
+          identity_bind: 0.0.0.0
+      - name: empty bind
+        expect: identity_bind
+        vars:
+          identity_bind: ""
+      - name: bind is not an ip
+        expect: identity_bind
+        vars:
+          identity_bind: "10.0.0.256"
+      - name: source is not a cidr
+        expect: identity_allowed_sources
+        vars:
+          identity_allowed_sources: ["edge.example.com"]
+      - name: sources is a string
+        expect: identity_allowed_sources
+        vars:
+          identity_allowed_sources: "192.0.2.1"
+      - name: floating image tag
+        expect: floating tags
+        vars:
+          vaultwarden_version: latest
+      - name: major-only image tag
+        expect: floating tags
+        vars:
+          authelia_version: "4"
+      - name: smtp host without from
+        expect: vaultwarden_smtp
+        vars:
+          vaultwarden_smtp_host: smtp.example.com
+      - name: smtp plaintext
+        expect: vaultwarden_smtp
+        vars:
+          vaultwarden_smtp_host: smtp.example.com
+          vaultwarden_smtp_from: v@example.com
+          vaultwarden_smtp_security: "off"
+      - name: smtp user without password
+        expect: vaultwarden_smtp
+        vars:
+          vaultwarden_smtp_host: smtp.example.com
+          vaultwarden_smtp_from: v@example.com
+          vaultwarden_smtp_username: u
+      - name: device email without smtp
+        expect: vaultwarden_smtp
+        vars:
+          vaultwarden_require_device_email: true
+      - name: bad org creation list
+        expect: vaultwarden_org_creation_users
+        vars:
+          vaultwarden_org_creation_users: "alice"
+      - name: missing image version
+        expect: floating tags
+        vars:
+          vaultwarden_version: ""
+      - name: tag without digest
+        expect: digest
+        vars:
+          authelia_version: "4.5.6"
+      - name: uid zero
+        expect: identity_uid
+        vars:
+          identity_uid: 0
+      - name: bad policy
+        expect: authelia_default_policy
+        vars:
+          authelia_default_policy: bypass
+      - name: no users
+        expect: authelia_users
+        vars:
+          authelia_users: {}
+      - name: plain-text user password
+        expect: alice
+        vars:
+          authelia_users:
+            alice:
+              displayname: A
+              email: a@example.com
+              password: hunter2
+      - name: placeholder argon2 hash
+        expect: alice
+        vars:
+          authelia_users:
+            alice:
+              displayname: A
+              email: a@example.com
+              password: "$argon2id$v=19$m=65536,t=3,p=4$REPLACE_ME"
+      - name: user without email
+        expect: bob
+        vars:
+          authelia_users:
+            bob:
+              displayname: B
+              password: "$argon2id$x"
+      - name: bad username
+        expect: Carol
+        vars:
+          authelia_users:
+            Carol:
+              displayname: C
+              email: c@example.com
+              password: "$argon2id$x"
+      - name: plain-text admin token
+        expect: vaultwarden_admin_token
+        vars:
+          vaultwarden_admin_token: letmein
+      - name: smtp without password
+        expect: authelia_smtp
+        vars:
+          authelia_smtp_address: "submission://smtp.example.com:587"
+      - name: smtp without scheme
+        expect: authelia_smtp
+        vars:
+          authelia_smtp_address: "smtp.example.com:587"
+          authelia_smtp_password: x
+      - name: smtp without sender
+        expect: authelia_smtp_sender
+        vars:
+          authelia_smtp_address: "submission://smtp.example.com:587"
+          authelia_smtp_password: x
+          authelia_smtp_sender: ""
+      - name: vaultwarden from is not an email
+        expect: vaultwarden_smtp
+        vars:
+          vaultwarden_smtp_host: smtp.example.com
+          vaultwarden_smtp_from: "not-an-email"
+      - name: unknown log level
+        expect: authelia_log_level
+        vars:
+          authelia_log_level: verbose
+      - name: free-text session duration
+        expect: authelia_session_expiration
+        vars:
+          authelia_session_expiration: twelve hours
+      - name: session inactivity with a wrong unit
+        expect: authelia_session_inactivity
+        vars:
+          authelia_session_inactivity: 30minutes
+      - name: bypass domain with a scheme
+        expect: authelia_bypass_domains
+        vars:
+          authelia_bypass_domains: ["https://vault.example.com"]
+      - name: bypass domain in upper case
+        expect: authelia_bypass_domains
+        vars:
+          authelia_bypass_domains: ["Vault.Example.com"]
+      - name: memory limit with a space
+        expect: identity_authelia_mem_limit
+        vars:
+          identity_authelia_mem_limit: 512 MB
+      - name: log size without a number
+        expect: identity_log_max_size
+        vars:
+          identity_log_max_size: big
+      - name: healthcheck interval is prose
+        expect: identity_healthcheck_interval
+        vars:
+          identity_healthcheck_interval: soon
+      - name: timezone with a space
+        expect: identity_timezone
+        vars:
+          identity_timezone: Europe/War saw
+      - name: login burst too low
+        expect: vaultwarden_login_ratelimit
+        vars:
+          vaultwarden_login_ratelimit_max_burst: 1
+      - name: backup age zero
+        expect: identity_backup_max_age_hours
+        vars:
+          identity_backup_max_age_hours: 0
+      - name: groups given as a string
+        expect: alice
+        vars:
+          authelia_users:
+            alice:
+              displayname: A
+              email: a@example.com
+              password: "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$cmVwbGFjZW1l"
+              groups: admins
+  tasks:
+    - name: Good input is accepted
+      ansible.builtin.include_role:
+        name: identity
+        tasks_from: validate.yml
+      vars:
+        <<: *baseline
+
+    - name: Tag-only images are accepted when digests are not required
+      vars: *baseline
+      block:
+        - name: Run validation without digest requirement
+          ansible.builtin.include_role:
+            name: identity
+            tasks_from: validate.yml
+          vars:
+            identity_require_image_digest: false
+            authelia_version: "4.5.6"
+
+    - name: Valid variants are accepted
+      ansible.builtin.include_tasks: variant.yml
+      loop_control:
+        loop_var: variant
+        label: "{{ variant | to_json }}"
+      loop:
+        - authelia_session_remember_me: "-1"
+        - authelia_session_expiration: 1h30m
+          authelia_session_inactivity: 300
+        - authelia_bypass_domains: ["*.example.com", "vault.example.com"]
+        - authelia_bypass_domains: []
+        - authelia_log_level: debug
+          identity_timezone: Europe/Warsaw
+        - identity_healthcheck_interval: 1m30s
+          identity_vaultwarden_mem_limit: 1g
+        - authelia_users:
+            alice:
+              displayname: Alice
+              email: alice@example.com
+              password: "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$cmVwbGFjZW1l"
+              groups: [admins, dev]
+
+    - name: Bad input is rejected with the expected message
+      ansible.builtin.include_tasks: case.yml
+      vars:
+        case_vars: "{{ baseline | combine(case.vars) }}"
+      loop: "{{ cases }}"
+      loop_control:
+        loop_var: case
+        label: "{{ case.name }}"

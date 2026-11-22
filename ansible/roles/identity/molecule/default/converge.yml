@@ -1,0 +1,23 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: false
+  vars_files: [vars.yml]
+  pre_tasks:
+    - name: Wait for the guest
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+
+    - name: Confirm disposable test target
+      ansible.builtin.import_tasks: guard.yml
+
+    - name: Report (and optionally refuse) skipped optional coverage
+      ansible.builtin.import_tasks: coverage.yml
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: docker
+    - role: identity

@@ -1,0 +1,34 @@
+---
+- name: "Case | {{ case.name }}"
+  block:
+    - name: Ensure every override key is declared in baseline
+      ansible.builtin.assert:
+        that: (case.vars.keys() | difference(baseline.keys()) | list) == []
+        fail_msg: >-
+          Case '{{ case.name }}' overrides keys not present in baseline:
+          {{ case.vars.keys() | difference(baseline.keys()) | list }}
+        quiet: true
+
+    # include_role `vars:` cannot take a templated dict, so the inputs are applied as facts. Every
+    # case sets the complete baseline plus its overrides, so nothing leaks from one case to the next.
+    - name: Apply the baseline plus this case's overrides
+      ansible.builtin.set_fact:
+        "{{ item.key }}": "{{ item.value }}"
+      loop: "{{ case_vars | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Run the validation
+      ansible.builtin.include_role:
+        name: identity
+        tasks_from: validate.yml
+
+    - name: It must not get here
+      ansible.builtin.fail:
+        msg: "validation unexpectedly passed for case '{{ case.name }}'"
+  rescue:
+    - name: The failure names the offending input
+      ansible.builtin.assert:
+        that: case.expect in ansible_failed_result.msg
+        fail_msg: "case '{{ case.name }}': expected '{{ case.expect }}' in: {{ ansible_failed_result.msg }}"
+        quiet: true
