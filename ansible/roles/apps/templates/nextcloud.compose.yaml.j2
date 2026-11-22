@@ -1,0 +1,62 @@
+# {{ ansible_managed }}
+name: nextcloud
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "{{ apps_log_max_size }}"
+    max-file: "{{ apps_log_max_file }}"
+services:
+  db:
+    image: {{ nextcloud_postgres_image }}
+    restart: unless-stopped
+    env_file: nextcloud-db.env
+    volumes:
+      - {{ apps_data_root }}/nextcloud/db:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1: during first init the entrypoint's temporary server listens on the unix socket
+      # only, so a socket check could report healthy before the real server accepts TCP connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: {{ nextcloud_db_mem_limit }}
+    logging: *default-logging
+  redis:
+    image: {{ nextcloud_redis_image }}
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-lru"]
+    security_opt: [no-new-privileges:true]
+    mem_limit: {{ nextcloud_redis_mem_limit }}
+    logging: *default-logging
+  app:
+    image: {{ nextcloud_image }}
+    restart: unless-stopped
+    env_file:
+      - path: nextcloud.env
+        required: true
+      - path: nextcloud-admin.env
+        required: false
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+    volumes:
+      - {{ apps_data_root }}/nextcloud/html:/var/www/html
+      - {{ apps_media_root }}/nextcloud/data:/var/www/html/data
+    ports:
+      - "{{ apps_bind }}:{{ nextcloud_port }}:80"
+    security_opt: [no-new-privileges:true]
+    mem_limit: {{ nextcloud_mem_limit }}
+    logging: *default-logging
+  cron:
+    image: {{ nextcloud_image }}
+    restart: unless-stopped
+    entrypoint: /cron.sh
+    env_file: nextcloud.env
+    depends_on: [app]
+    volumes:
+      - {{ apps_data_root }}/nextcloud/html:/var/www/html
+      - {{ apps_media_root }}/nextcloud/data:/var/www/html/data
+    security_opt: [no-new-privileges:true]
+    # Shares nextcloud.env (PHP_MEMORY_LIMIT) with the app container: keep this above that limit.
+    mem_limit: {{ nextcloud_cron_mem_limit }}
+    logging: *default-logging

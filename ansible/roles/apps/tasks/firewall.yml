@@ -1,0 +1,55 @@
+---
+# On an untagged (or --tags apps) first deploy this runs before the stacks start, so the ports are
+# never open while provisioning. After a reboot the containers start together with docker.service, a few
+# seconds before this unit has applied the rules; exposure in that window is limited to the network of apps_bind.
+- name: Iptables is present
+  ansible.builtin.apt:
+    name: iptables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Firewall script
+  ansible.builtin.template:
+    src: apps-firewall.sh.j2
+    dest: /usr/local/sbin/apps-firewall.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Firewall unit (re-applied whenever docker restarts)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/apps-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible
+      [Unit]
+      Description=Restrict published app ports to the edge proxies
+      Requires=docker.service
+      After=docker.service
+      PartOf=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/apps-firewall.sh
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  register: apps_fw_unit
+
+- name: Enable the firewall unit
+  ansible.builtin.systemd:
+    name: apps-firewall.service
+    daemon_reload: "{{ apps_fw_unit is changed }}"
+    enabled: true
+    state: started
+
+- name: Apply firewall rules (idempotent, atomic)
+  ansible.builtin.command: /usr/local/sbin/apps-firewall.sh
+  changed_when: false

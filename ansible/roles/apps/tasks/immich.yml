@@ -1,0 +1,59 @@
+---
+# The database lives under apps_data_root, separate from the photo library under apps_media_root,
+# so moving the library to another disk never drags the database along.
+# The DB dir has no owner on purpose: the postgres entrypoint owns it, and enforcing root would undo that.
+- name: Immich directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(omit) }}"
+    group: "{{ item.owner | default(omit) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /opt/apps/immich, owner: root, mode: "0750" }
+    - { path: "{{ apps_data_root }}/immich-db", mode: "0700" }
+    - { path: "{{ apps_media_root }}/immich", owner: root, mode: "0755" }
+
+- name: Immich environment
+  ansible.builtin.template:
+    src: immich.env.j2
+    dest: /opt/apps/immich/immich.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Immich database environment
+  ansible.builtin.template:
+    src: immich-db.env.j2
+    dest: /opt/apps/immich/immich-db.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Immich compose file
+  ansible.builtin.template:
+    src: immich.compose.yaml.j2
+    dest: /opt/apps/immich/compose.yaml
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Start the Immich stack
+  community.docker.docker_compose_v2:
+    project_src: /opt/apps/immich
+    state: present
+    wait: true
+    wait_timeout: 300
+
+- name: Immich answers
+  ansible.builtin.uri:
+    url: "http://{{ apps_bind }}:{{ immich_port }}/api/server/ping"
+    status_code: 200
+  register: apps_immich_ping
+  until: apps_immich_ping.status == 200
+  retries: 30
+  delay: 10
+  changed_when: false
+  when: not ansible_check_mode

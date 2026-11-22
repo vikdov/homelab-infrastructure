@@ -1,0 +1,34 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Docker publishes ports through the FORWARD chain, so INPUT rules never see that traffic.
+# DOCKER-USER is evaluated first: only the edge proxies (and this host) may reach the app ports.
+set -eu
+
+i=0
+until iptables -w 5 -n -L DOCKER-USER >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -gt 30 ]; then
+    echo "DOCKER-USER chain not found" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+# One transaction: APPS-INGRESS is flushed and refilled in a single commit, so re-applying
+# never leaves the ports unprotected in between. Only published (DNAT) connections to apps_bind
+# are matched, so the containers' own outbound traffic and other host IPs are never touched.
+iptables-restore -w 5 --noflush <<'EOF'
+*filter
+:APPS-INGRESS - [0:0]
+{% for port in apps_published_ports %}
+{% for src in apps_firewall_allowed_sources %}
+-A APPS-INGRESS -p tcp -m conntrack --ctstate DNAT --ctorigdst {{ apps_bind }} --ctorigdstport {{ port }} -s {{ src }} -j RETURN
+{% endfor %}
+-A APPS-INGRESS -p tcp -m conntrack --ctstate DNAT --ctorigdst {{ apps_bind }} --ctorigdstport {{ port }} -j DROP
+{% endfor %}
+COMMIT
+EOF
+
+# Only new inbound direction, so replies from the containers are never touched.
+iptables -w 5 -C DOCKER-USER -m conntrack --ctdir ORIGINAL -j APPS-INGRESS 2>/dev/null ||
+  iptables -w 5 -I DOCKER-USER 1 -m conntrack --ctdir ORIGINAL -j APPS-INGRESS

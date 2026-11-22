@@ -1,0 +1,41 @@
+---
+apps_domain: "<example.com>" # or "{{ hostvars['edge'].edge_domain }}"
+apps_data_root: /srv/apps
+# When this points at a separate disk it must be the mountpoint itself, defined in /etc/fstab (or a
+# systemd .mount unit); the role then asserts it is mounted and makes docker.service wait for it at boot.
+apps_media_root: /srv/apps # point at the HDD mount later
+# apps_bind defaults to ansible_host and must be an IPv4 address; set it here if ansible_host is a name.
+
+# How edge appears to the apps: e.g. its LAN and DMZ addresses (REQUIRED, site-specific).
+apps_edge_proxies: ["<edge_lan_ip>", "<edge_dmz_ip>"] # e.g. ["10.10.20.2", "192.168.1.101"]
+
+nextcloud_version: "<X.Y.Z>" # REQUIRED, exact version, e.g. "32.0.1" (never skip a major version when upgrading)
+nextcloud_admin_user: "<admin_user>" # letters, digits and _ . @ - only; used on first install
+nextcloud_admin_password: "{{ vault_nextcloud_admin_password }}"
+
+immich_version: "<vX.Y.Z>" # REQUIRED, exact version with the leading v, e.g. "v2.1.0"
+immich_postgres_image: "ghcr.io/immich-app/postgres:<tag>@sha256:<digest>" # REQUIRED: copy the `database` image line from Immich's compose file for that release (no <placeholders>)
+
+# Optional digest pinning, e.g.:
+# nextcloud_postgres_image: "postgres:17-alpine@sha256:<digest>"
+
+# Set to true only if the restic role runs restic_post_commands even when the backup fails
+# (otherwise a failed backup leaves Nextcloud in maintenance mode).
+apps_backup_nextcloud_maintenance: false
+
+# The media root is included so a library moved to another disk is still backed up.
+# Live DB directories are excluded only while the corresponding app is enabled (and dumped via backup.sh).
+# Disabling an app leaves its containers running: backup.sh then still dumps a database that is running,
+# but the live DB directory is included in the snapshot as an inconsistent file copy. Treat the SQL dump
+# as authoritative and remove that directory before restoring (see README, Backups and recovery).
+restic_paths: "{{ ([apps_data_root, apps_media_root] | unique) + ['/opt/apps'] }}"
+restic_excludes: >-
+  {{
+    ([apps_data_root ~ '/nextcloud/db'] if (nextcloud_enabled | default(true) | bool) else [])
+    + ([apps_data_root ~ '/immich-db'] if (immich_enabled | default(true) | bool) else [])
+    + [apps_media_root ~ '/immich/thumbs', apps_media_root ~ '/immich/encoded-video']
+  }}
+restic_pre_commands:
+  - /opt/apps/backup.sh pre
+restic_post_commands:
+  - /opt/apps/backup.sh post

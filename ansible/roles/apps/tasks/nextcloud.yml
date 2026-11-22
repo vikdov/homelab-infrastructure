@@ -1,0 +1,116 @@
+# The container runs apache as www-data (uid 33), so the bind mounts must be owned by it.
+# The DB dir has no owner on purpose: the postgres entrypoint owns it, and enforcing root would undo that.
+- name: Nextcloud directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(omit) }}"
+    group: "{{ item.owner | default(omit) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /opt/apps/nextcloud
+      owner: root
+      mode: "0750"
+    - path: "{{ apps_data_root }}/nextcloud"
+      owner: root
+      mode: "0755"
+    - path: "{{ apps_data_root }}/nextcloud/html"
+      owner: "33"
+      mode: "0750"
+    - path: "{{ apps_data_root }}/nextcloud/db"
+      mode: "0700"
+    - path: "{{ apps_media_root }}/nextcloud"
+      owner: root
+      mode: "0755"
+    - path: "{{ apps_media_root }}/nextcloud/data"
+      owner: "33"
+      mode: "0750"
+
+- name: Nextcloud environment
+  ansible.builtin.template:
+    src: nextcloud.env.j2
+    dest: /opt/apps/nextcloud/nextcloud.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Nextcloud database environment
+  ansible.builtin.template:
+    src: nextcloud-db.env.j2
+    dest: /opt/apps/nextcloud/nextcloud-db.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Check whether Nextcloud is already installed
+  ansible.builtin.stat:
+    path: "{{ apps_data_root }}/nextcloud/html/config/config.php"
+  register: apps_nc_config
+
+# The admin user is only consumed by the installer; a bad value would fail the install after the
+# database is initialised, so reject it before anything is started. Deliberately a conservative subset
+# of the characters Nextcloud allows (the value is also written into an env file).
+# No no_log here: the value is not secret and fail_msg stays readable.
+- name: Initial admin user must be a plain username (first install only)
+  ansible.builtin.assert:
+    that: nextcloud_admin_user is match('^[A-Za-z0-9_.@-]+$')
+    fail_msg: >-
+      nextcloud_admin_user may contain only letters, digits and _ . @ - for the initial installation.
+    quiet: true
+  when: not apps_nc_config.stat.exists
+
+# Separate file, used by the app container on initial installation only and removed once
+# status.php reports the instance as installed.
+- name: Nextcloud admin environment (first install only)
+  ansible.builtin.template:
+    src: nextcloud-admin.env.j2
+    dest: /opt/apps/nextcloud/nextcloud-admin.env
+    owner: root
+    group: root
+    mode: "0600"
+  when: not apps_nc_config.stat.exists
+  no_log: true
+
+- name: Nextcloud compose file
+  ansible.builtin.template:
+    src: nextcloud.compose.yaml.j2
+    dest: /opt/apps/nextcloud/compose.yaml
+    owner: root
+    group: root
+    mode: "0640"
+
+# Changed env or compose content recreates the affected containers.
+- name: Start the Nextcloud stack
+  community.docker.docker_compose_v2:
+    project_src: /opt/apps/nextcloud
+    state: present
+    wait: true
+    wait_timeout: 180
+
+# Also fails if Nextcloud is left in maintenance mode (e.g. by an interrupted backup).
+- name: Nextcloud answers (the first start runs the installer, which takes a while)
+  ansible.builtin.uri:
+    url: "http://{{ apps_bind }}:{{ nextcloud_port }}/status.php"
+    status_code: 200
+    return_content: true
+  register: apps_nc_status
+  until:
+    - apps_nc_status.status | default(-1) == 200
+    - (apps_nc_status.json | default({})).installed | default(false) | bool
+    - not ((apps_nc_status.json | default({})).maintenance | default(false) | bool)
+  retries: 40
+  delay: 10
+  changed_when: false
+  when: not ansible_check_mode
+
+# Only once Nextcloud reports itself installed. Note: after a fresh install the admin variables
+# disappear from the app container's environment, so the next run recreates the app container once.
+- name: Remove Nextcloud initial admin environment after installation
+  ansible.builtin.file:
+    path: /opt/apps/nextcloud/nextcloud-admin.env
+    state: absent
+  when:
+    - not ansible_check_mode
+    - (apps_nc_status.json | default({})).installed | default(false) | bool

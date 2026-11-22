@@ -1,0 +1,61 @@
+# {{ ansible_managed }}
+name: immich
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "{{ apps_log_max_size }}"
+    max-file: "{{ apps_log_max_file }}"
+services:
+  immich-server:
+    image: {{ immich_server_image }}
+    restart: unless-stopped
+    env_file: immich.env
+    depends_on:
+      redis: { condition: service_started }
+      database: { condition: service_healthy }
+    volumes:
+      - {{ apps_media_root }}/immich:/data
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "{{ apps_bind }}:{{ immich_port }}:2283"
+    security_opt: [no-new-privileges:true]
+    mem_limit: {{ immich_server_mem_limit }}
+    logging: *default-logging
+  immich-machine-learning:
+    image: {{ immich_ml_image }}
+    restart: unless-stopped
+    # No env_file: the ML container has no business knowing the database password.
+    environment:
+      TZ: "{{ apps_timezone }}"
+    volumes:
+      - model-cache:/cache
+    security_opt: [no-new-privileges:true]
+    mem_limit: {{ immich_ml_mem_limit }}
+    logging: *default-logging
+  redis:
+    image: {{ immich_redis_image }}
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    mem_limit: {{ immich_redis_mem_limit }}
+    logging: *default-logging
+  database:
+    image: {{ immich_postgres_image }}
+    restart: unless-stopped
+    env_file: immich-db.env
+    environment:
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - {{ apps_data_root }}/immich-db:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1: during first init the entrypoint's temporary server listens on the unix socket
+      # only, so a socket check could report healthy before the real server accepts TCP connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    shm_size: 128mb
+    mem_limit: {{ immich_db_mem_limit }}
+    logging: *default-logging
+volumes:
+  model-cache:
