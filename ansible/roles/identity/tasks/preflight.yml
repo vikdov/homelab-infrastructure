@@ -1,0 +1,43 @@
+---
+# Needs facts and a working Docker; runs after validate.yml and before anything is changed.
+
+- name: Assert a supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution_release'] in identity_supported_releases
+      - ansible_facts['architecture'] in identity_supported_architectures
+    fail_msg: >-
+      Unsupported platform: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_release'] }}
+      on {{ ansible_facts['architecture'] }}. Supported: Debian {{ identity_supported_releases | join(', ') }}
+      on {{ identity_supported_architectures | join(', ') }}.
+    quiet: true
+
+- name: Assert identity_bind is an address of this host
+  ansible.builtin.assert:
+    that: identity_bind in ansible_facts['all_ipv4_addresses']
+    fail_msg: >-
+      identity_bind ({{ identity_bind }}) is not configured on this host
+      (addresses: {{ ansible_facts['all_ipv4_addresses'] | join(', ') }}).
+    quiet: true
+
+- name: Query Docker Compose
+  ansible.builtin.command: docker compose version --short
+  register: identity_compose_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert Docker Compose is installed and recent enough
+  ansible.builtin.assert:
+    that:
+      - identity_compose_version.rc == 0
+      - >-
+        (identity_compose_version.stdout | trim | regex_replace('^v', ''))
+        is version(identity_min_compose_version, '>=')
+    fail_msg: >-
+      Docker Compose v{{ identity_min_compose_version }} or newer is required
+      (found: {{ identity_compose_version.stdout | default('none') | trim }}).
+      Run the docker role first and make sure the community.docker collection
+      (>= 3.8.0) is installed: ansible-galaxy collection install -r requirements.yml
+    quiet: true

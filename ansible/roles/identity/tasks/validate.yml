@@ -1,0 +1,240 @@
+---
+# Pure input validation: needs no facts and touches nothing, so it is unit-tested
+# without a VM (molecule/validation). Every assert has its own message that names
+# the offending variable.
+
+- name: Assert identity_domain is a lower-case DNS name
+  ansible.builtin.assert:
+    that: identity_domain is match(identity_domain_re)
+    fail_msg: "identity_domain must be a lower-case DNS name with at least one dot (got '{{ identity_domain }}')."
+    quiet: true
+
+- name: Assert the published ports are valid and distinct
+  ansible.builtin.assert:
+    that:
+      - identity_vaultwarden_port | int in range(1, 65536)
+      - identity_authelia_port | int in range(1, 65536)
+      - identity_vaultwarden_port | int != identity_authelia_port | int
+    fail_msg: >-
+      identity_vaultwarden_port and identity_authelia_port must be distinct integers in 1-65535
+      (got {{ identity_vaultwarden_port }} and {{ identity_authelia_port }}).
+    quiet: true
+
+- name: Assert identity_bind is a specific IPv4 address
+  ansible.builtin.assert:
+    that:
+      - identity_bind is match(identity_ipv4_re)
+      - identity_bind != '0.0.0.0'
+    fail_msg: >-
+      identity_bind must be a specific IPv4 address, never 0.0.0.0 (got '{{ identity_bind }}').
+      Set it in host_vars if the host has no default route or several interfaces.
+    quiet: true
+
+- name: Assert identity_allowed_sources is a list of IPv4 addresses or CIDRs
+  ansible.builtin.assert:
+    that:
+      - identity_allowed_sources is sequence
+      - identity_allowed_sources is not string
+      - identity_allowed_sources | reject('match', identity_cidr_re) | list | length == 0
+    fail_msg: "identity_allowed_sources must be a list of IPv4 addresses or CIDRs (got {{ identity_allowed_sources }})."
+    quiet: true
+
+- name: Assert the images are pinned
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_version | string is match(identity_image_version_re)
+      - authelia_version | string is match(identity_image_version_re)
+    fail_msg: >-
+      vaultwarden_version and authelia_version must be 'x.y.z' or 'x.y.z@sha256:<64 hex>';
+      floating tags such as latest, 1 or 1.37 are refused.
+    quiet: true
+
+- name: Assert the images are pinned by digest
+  ansible.builtin.assert:
+    that:
+      - "'@sha256:' in (vaultwarden_version | string)"
+      - "'@sha256:' in (authelia_version | string)"
+    fail_msg: >-
+      vaultwarden_version and authelia_version need an '@sha256:' digest
+      (tags are mutable). Set identity_require_image_digest: false to allow tag-only images.
+    quiet: true
+  when: identity_require_image_digest | bool
+
+- name: Assert the service account ids
+  ansible.builtin.assert:
+    that:
+      - identity_uid | int > 0
+      - identity_gid | int > 0
+    fail_msg: "identity_uid and identity_gid must be positive integers; the containers never run as root."
+    quiet: true
+
+- name: Assert the Authelia policy
+  ansible.builtin.assert:
+    that: authelia_default_policy in ['one_factor', 'two_factor']
+    fail_msg: "authelia_default_policy must be one_factor or two_factor (got '{{ authelia_default_policy }}')."
+    quiet: true
+
+- name: Assert the Authelia bypass domains are a list
+  ansible.builtin.assert:
+    that:
+      - authelia_bypass_domains is sequence
+      - authelia_bypass_domains is not string
+    fail_msg: "authelia_bypass_domains must be a list of domain names."
+    quiet: true
+
+- name: Assert the Authelia bypass domains are valid host patterns
+  ansible.builtin.assert:
+    that: authelia_bypass_domains | map('string') | reject('match', identity_bypass_domain_re) | list | length == 0
+    fail_msg: >-
+      authelia_bypass_domains entries must be lower-case domain names, optionally starting with '*.'
+      (no scheme, no path); got {{ authelia_bypass_domains }}.
+    quiet: true
+
+- name: Assert Authelia users are defined
+  ansible.builtin.assert:
+    that:
+      - authelia_users is mapping
+      - authelia_users | length > 0
+    fail_msg: >-
+      authelia_users must be a non-empty mapping of username -> {displayname, email, password}.
+      Is vault_authelia_users missing from your vault?
+    quiet: true
+
+# Computed from names only, so the message can safely name the broken users
+# without printing a single password hash.
+- name: Assert every Authelia user is complete and uses an argon2id hash
+  ansible.builtin.assert:
+    that: identity_invalid_users | length == 0
+    fail_msg: >-
+      authelia_users: these users need a valid username ([a-z0-9._-]), displayname, email, an
+      argon2id password hash and, if set, groups as a list: {{ identity_invalid_users | join(', ') }}
+    quiet: true
+  vars:
+    # Ansible may already have turned the JSON text into a list when resolving the variable;
+    # accept both forms instead of depending on that behaviour.
+    identity_invalid_users: >-
+      {{ identity_invalid_users_raw if identity_invalid_users_raw is not string
+         else identity_invalid_users_raw | from_json }}
+    identity_invalid_users_raw: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- for name, u in authelia_users.items() -%}
+      {%- if name is not match(identity_username_re)
+          or u is not mapping
+          or (u.displayname | default('') | string | length == 0)
+          or (u.email | default('') | string | length == 0)
+          or (u.password | default('') | string is not match(identity_argon2id_re))
+          or (u.groups is defined and (u.groups is string or u.groups is not sequence)) -%}
+      {%- set ns.bad = ns.bad + [name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.bad | to_json }}
+
+- name: Assert the Vaultwarden admin token is an argon2 hash (or empty)
+  ansible.builtin.assert:
+    that: (vaultwarden_admin_token | length == 0) or (vaultwarden_admin_token is match('^[$]argon2'))
+    fail_msg: >-
+      vaultwarden_admin_token must be empty (admin page disabled) or an argon2 PHC string.
+      A plain-text token is refused.
+    quiet: true
+
+- name: Assert the SMTP settings are consistent
+  ansible.builtin.assert:
+    that:
+      - >-
+        (authelia_smtp_address | length == 0) or
+        (authelia_smtp_address is match('^(smtp|submission|submissions)://[^/]+$'))
+      - (authelia_smtp_address | length == 0) or (authelia_smtp_password | length > 0)
+    fail_msg: >-
+      authelia_smtp_address must look like submission://host:587 (schemes smtp, submission,
+      submissions) and needs authelia_smtp_password when set.
+    quiet: true
+
+- name: Assert the Vaultwarden mail settings are consistent
+  ansible.builtin.assert:
+    that:
+      - (vaultwarden_smtp_host | length == 0) or (vaultwarden_smtp_host is match('^[A-Za-z0-9.-]+$'))
+      - (vaultwarden_smtp_host | length == 0) or (vaultwarden_smtp_from is match(identity_email_re))
+      - vaultwarden_smtp_security in ['starttls', 'force_tls']
+      - vaultwarden_smtp_port | int in range(1, 65536)
+      - (vaultwarden_smtp_username | length == 0) or (vaultwarden_smtp_host | length > 0)
+      - (vaultwarden_smtp_username | length == 0) or (vaultwarden_smtp_password | length > 0)
+      - (not (vaultwarden_require_device_email | bool)) or (vaultwarden_smtp_host | length > 0)
+    fail_msg: >-
+      vaultwarden_smtp_*: host must be a bare hostname (no scheme), from is required with a host and
+      must be an email address,
+      security must be starttls or force_tls (plaintext is refused), a username needs a host and a
+      password, and vaultwarden_require_device_email needs a host.
+    quiet: true
+
+- name: Assert vaultwarden_org_creation_users is empty, 'none' or a list of emails
+  ansible.builtin.assert:
+    that: >-
+      (vaultwarden_org_creation_users | length == 0) or (vaultwarden_org_creation_users == 'none') or
+      (vaultwarden_org_creation_users is match('^[^,\s@]+@[^,\s@]+(,[^,\s@]+@[^,\s@]+)*$'))
+    fail_msg: "vaultwarden_org_creation_users must be empty, 'none' or comma-separated email addresses."
+    quiet: true
+
+- name: Assert the Authelia runtime settings
+  ansible.builtin.assert:
+    that:
+      - authelia_log_level in ['trace', 'debug', 'info', 'warn', 'error']
+      - authelia_session_expiration | string is match(identity_duration_re)
+      - authelia_session_inactivity | string is match(identity_duration_re)
+      - authelia_session_remember_me | string is match(identity_duration_re)
+      - (authelia_smtp_address | length == 0) or (authelia_smtp_sender | length > 0)
+    fail_msg: >-
+      authelia_log_level must be trace, debug, info, warn or error; authelia_session_expiration,
+      authelia_session_inactivity and authelia_session_remember_me must be durations such as 12h,
+      30m or 1M (remember-me also accepts -1 to disable it); authelia_smtp_sender is required
+      when authelia_smtp_address is set.
+    quiet: true
+
+- name: Assert the container limits and log rotation
+  ansible.builtin.assert:
+    that:
+      - identity_pids_limit | int > 0
+      - identity_vaultwarden_mem_limit | string is match(identity_mem_limit_re)
+      - identity_authelia_mem_limit | string is match(identity_mem_limit_re)
+      - identity_log_max_size | string is match(identity_log_size_re)
+      - identity_log_max_file | int > 0
+    fail_msg: >-
+      identity_pids_limit and identity_log_max_file must be positive integers;
+      identity_vaultwarden_mem_limit and identity_authelia_mem_limit must look like 256m or 1g;
+      identity_log_max_size must look like 10m.
+    quiet: true
+
+- name: Assert the healthcheck timings
+  ansible.builtin.assert:
+    that:
+      - identity_healthcheck_interval | string is match(identity_compose_duration_re)
+      - identity_healthcheck_timeout | string is match(identity_compose_duration_re)
+      - identity_healthcheck_start_period | string is match(identity_compose_duration_re)
+      - identity_healthcheck_retries | int > 0
+    fail_msg: >-
+      identity_healthcheck_interval, identity_healthcheck_timeout and identity_healthcheck_start_period
+      must be durations such as 30s or 1m, and identity_healthcheck_retries a positive integer.
+    quiet: true
+
+- name: Assert identity_timezone is a plausible zone name
+  ansible.builtin.assert:
+    that: identity_timezone | string is match(identity_timezone_re)
+    fail_msg: >-
+      identity_timezone must be a tz database name such as UTC or Europe/Warsaw
+      (got '{{ identity_timezone }}').
+    quiet: true
+
+- name: Assert the Vaultwarden login rate limit
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_login_ratelimit_seconds | int >= 1
+      - vaultwarden_login_ratelimit_max_burst | int >= 2
+    fail_msg: >-
+      vaultwarden_login_ratelimit_seconds must be >= 1 and vaultwarden_login_ratelimit_max_burst >= 2
+      (login and two-factor share the burst budget).
+    quiet: true
+
+- name: Assert the backup monitoring settings
+  ansible.builtin.assert:
+    that: identity_backup_max_age_hours | int >= 1
+    fail_msg: "identity_backup_max_age_hours must be an integer >= 1 (got '{{ identity_backup_max_age_hours }}')."
+    quiet: true

@@ -1,0 +1,30 @@
+---
+# Constants, not meant to be overridden.
+identity_vaultwarden_container_port: 8080 # ROCKET_PORT, must be >= 1024 for non-root
+identity_authelia_container_port: 9091
+identity_secret_names: [jwt, session, storage]
+identity_supported_releases: [bookworm, trixie]
+identity_supported_architectures: [x86_64, aarch64]
+# docker_compose_v2 needs >= 2.18; `up --wait --wait-timeout` is solid from 2.20.
+identity_min_compose_version: "2.20.0"
+# Lower-case DNS name with at least one dot, labels 1-63 chars.
+identity_domain_re: '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+identity_octet_re: "(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+identity_ipv4_re: '^({{ identity_octet_re }}\.){3}{{ identity_octet_re }}$'
+identity_cidr_re: '^({{ identity_octet_re }}\.){3}{{ identity_octet_re }}(/(3[0-2]|[12]?[0-9]))?$'
+# x.y.z with an optional @sha256 digest. Floating tags (latest, 1, 1.37, alpine) never match.
+identity_image_version_re: '^[0-9]+\.[0-9]+\.[0-9]+(@sha256:[0-9a-f]{64})?$'
+identity_username_re: "^[a-z0-9][a-z0-9._-]*$"
+identity_argon2id_re: "^[$]argon2id[$]v=[0-9]+[$]m=[0-9]+,t=[0-9]+,p=[0-9]+[$][A-Za-z0-9+/]+[$][A-Za-z0-9+/]+$"
+# Authelia durations: seconds, or number+unit sequences such as 12h, 1M, 1h30m. -1 disables remember-me.
+identity_duration_re: "^(-1|[0-9]+|([0-9]+(y|M|w|d|h|m|s))+)$"
+# Compose/Docker durations (healthchecks).
+identity_compose_duration_re: "^([0-9]+(ms|us|s|m|h))+$"
+identity_mem_limit_re: "^[0-9]+[bkmg]$"
+identity_log_size_re: "^[0-9]+[kmg]?$"
+identity_timezone_re: "^[A-Za-z0-9_+./-]+$"
+identity_email_re: '^[^\s@,]+@[^\s@,]+$'
+# Lower-case host pattern, optionally with a leading wildcard label (Authelia access-control domains).
+identity_bypass_domain_re: '^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+# True when Vaultwarden gets an SMTP password file.
+identity_vw_smtp_auth: "{{ vaultwarden_smtp_host | length > 0 and vaultwarden_smtp_username | length > 0 }}"

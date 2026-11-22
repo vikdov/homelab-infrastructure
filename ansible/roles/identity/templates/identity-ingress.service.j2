@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Restrict identity published ports to the allowed sources (DOCKER-USER)
+After=docker.service network-online.target
+Wants=docker.service
+# Re-apply after a Docker restart; the rules themselves are not removed on stop.
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
+ExecStart=/usr/local/sbin/identity-ingress apply
+
+[Install]
+WantedBy=multi-user.target

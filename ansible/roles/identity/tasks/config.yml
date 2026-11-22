@@ -1,0 +1,34 @@
+---
+- name: Render Authelia configuration
+  ansible.builtin.template:
+    src: authelia.yml.j2
+    dest: /srv/identity/authelia/config/configuration.yml
+    owner: root
+    group: identity
+    mode: "0440"
+
+- name: Render Authelia users (Ansible is the source of truth)
+  ansible.builtin.template:
+    src: users_database.yml.j2
+    dest: /srv/identity/authelia/config/users_database.yml
+    owner: root
+    group: identity
+    mode: "0440"
+  no_log: true
+
+- name: Render Vaultwarden environment
+  ansible.builtin.template:
+    src: vaultwarden.env.j2
+    dest: /opt/identity/vaultwarden.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the consistent-backup script
+  ansible.builtin.template:
+    src: identity-backup-dump.sh.j2
+    dest: /usr/local/sbin/identity-backup-dump
+    owner: root
+    group: root
+    mode: "0755"

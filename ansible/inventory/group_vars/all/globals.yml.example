@@ -1,0 +1,42 @@
+---
+# Copy this file to your active globals/group_vars location and customize values
+# before running playbooks. Items marked [required] should be verified first.
+
+# [required] Base OS user and DNS/domain settings
+bootstrap_default_user: debian
+bootstrap_domain: home.arpa # Must match Terraform host_dns_domain and Pi-hole
+bootstrap_timezone: Europe/Warsaw
+bootstrap_locale: en_US.UTF-8
+
+# [required] SSH public key(s) authorized for Ansible/admin access.
+# A missing key file yields an empty list so preflight assertions fail cleanly
+# instead of raising an unhandled file lookup error.
+bootstrap_pubkey_file: >-
+  {{ lookup('ansible.builtin.env', 'HOMELAB_SSH_PUBKEY_FILE')
+     | default('~/.ssh/homelab_ed25519.pub', true) | expanduser }}
+bootstrap_ansible_pubkeys: >-
+  {{ [lookup('ansible.builtin.file', bootstrap_pubkey_file, errors='ignore') | default('', true) | trim]
+     | select | list }}
+
+# [required] Paste from: terraform -chdir=terraform/02-workloads output -raw ansible_site_vars
+# Replace these defaults with your real output, including your workstation IP/CIDR.
+bootstrap_mgmt_cidrs:
+  - 10.10.10.1
+  - 10.10.20.1
+  - 10.10.30.1
+  - 10.10.40.1
+  - 10.10.50.1
+  - 192.168.1.0/24
+
+bootstrap_monitoring_cidrs:
+  - 10.10.10.10
+
+# [optional] Telemetry, package mirrors, and custom trust roots
+bootstrap_node_exporter_enabled: true
+bootstrap_ntp_servers: []
+bootstrap_apt_proxy: ""
+bootstrap_apt_mirror_rewrites: []
+bootstrap_ca_cert_src: ""
+
+# [required] Domain used by ingress/reverse-proxy/edge services
+edge_domain: "homelab.example.com"

@@ -1,0 +1,405 @@
+---
+# Runs first, on the converged host: a dry run must complete, and must change nothing.
+- name: Check mode | a --check run on a converged host succeeds and touches nothing
+  hosts: all
+  become: true
+  gather_facts: true
+  check_mode: true
+  vars_files: [vars.yml]
+  vars:
+    compose: docker compose -f /opt/identity/compose.yaml
+  pre_tasks:
+    - name: Confirm disposable test target before side effects
+      ansible.builtin.import_tasks: guard.yml
+  tasks:
+    # check_mode: false on the read-only probes, otherwise they would be skipped in a dry run.
+    - name: Container ids and compose file before the dry run
+      ansible.builtin.command: "{{ compose }} ps -q {{ item }}"
+      register: check_ids_before
+      changed_when: false
+      check_mode: false
+      loop: [authelia, vaultwarden]
+
+    - name: Compose file checksum before the dry run
+      ansible.builtin.stat:
+        path: /opt/identity/compose.yaml
+      register: check_compose_before
+
+    - name: Run the role in check mode
+      ansible.builtin.include_role:
+        name: identity
+
+    - name: Container ids after the dry run
+      ansible.builtin.command: "{{ compose }} ps -q {{ item }}"
+      register: check_ids_after
+      changed_when: false
+      check_mode: false
+      loop: [authelia, vaultwarden]
+
+    - name: Compose file checksum after the dry run
+      ansible.builtin.stat:
+        path: /opt/identity/compose.yaml
+      register: check_compose_after
+
+    - name: The dry run recreated nothing and rewrote nothing
+      ansible.builtin.assert:
+        that:
+          - >-
+            check_ids_before.results | map(attribute='stdout') | list
+            == check_ids_after.results | map(attribute='stdout') | list
+          - check_compose_before.stat.checksum == check_compose_after.stat.checksum
+        quiet: true
+
+- name: Side effects | targeted recreation, secret rotation, SMTP path, restore drill, optional upgrade, Docker restart
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files: [vars.yml]
+  vars:
+    compose: docker compose -f /opt/identity/compose.yaml
+    as_svc: setpriv --reuid=10010 --regid=10010 --clear-groups
+    upgrade_vw: "{{ lookup('ansible.builtin.env', 'MOLECULE_VAULTWARDEN_UPGRADE_VERSION') }}"
+    upgrade_au: "{{ lookup('ansible.builtin.env', 'MOLECULE_AUTHELIA_UPGRADE_VERSION') }}"
+    # A REAL hash from `vaultwarden hash`; a made-up one may be rejected by Vaultwarden at startup.
+    test_admin_token: "{{ lookup('ansible.builtin.env', 'MOLECULE_VAULTWARDEN_TEST_ADMIN_HASH') }}"
+  pre_tasks:
+    - name: Confirm disposable test target before side effects
+      ansible.builtin.import_tasks: guard.yml
+  tasks:
+    # ---- 1. An Authelia config change must recreate Authelia only
+    - name: Container ids before the Authelia change
+      ansible.builtin.command: "{{ compose }} ps -q {{ item }}"
+      register: ids_before
+      changed_when: false
+      loop: [authelia, vaultwarden]
+
+    - name: Change the Authelia configuration only
+      ansible.builtin.include_role:
+        name: identity
+      vars:
+        authelia_default_policy: one_factor
+
+    - name: Container ids after the Authelia change
+      ansible.builtin.command: "{{ compose }} ps -q {{ item }}"
+      register: ids_after
+      changed_when: false
+      loop: [authelia, vaultwarden]
+
+    - name: Only Authelia was recreated
+      ansible.builtin.assert:
+        that:
+          - ids_after.results[0].stdout != ids_before.results[0].stdout
+          - ids_after.results[1].stdout == ids_before.results[1].stdout
+        quiet: true
+
+    # ---- 1b. A Vaultwarden env change must recreate Vaultwarden only
+    - name: Change the Vaultwarden environment only
+      ansible.builtin.include_role:
+        name: identity
+      vars:
+        authelia_default_policy: one_factor
+        vaultwarden_invitations_allowed: false
+
+    - name: Container ids after the Vaultwarden change
+      ansible.builtin.command: "{{ compose }} ps -q {{ item }}"
+      register: ids_after_vw
+      changed_when: false
+      loop: [authelia, vaultwarden]
+
+    - name: Only Vaultwarden was recreated
+      ansible.builtin.assert:
+        that:
+          - ids_after_vw.results[0].stdout == ids_after.results[0].stdout
+          - ids_after_vw.results[1].stdout != ids_after.results[1].stdout
+        quiet: true
+
+    # ---- 1c. Rotating a secret (jwt) must regenerate it and recreate Authelia only
+    - name: Delete the jwt secret to simulate rotation
+      ansible.builtin.file:
+        path: /srv/identity/secrets/jwt
+        state: absent
+
+    - name: Re-run the role after deleting jwt
+      ansible.builtin.include_role:
+        name: identity
+      vars:
+        authelia_default_policy: one_factor
+        vaultwarden_invitations_allowed: false
+
+    - name: Stat the regenerated jwt secret
+      ansible.builtin.stat:
+        path: /srv/identity/secrets/jwt
+      register: rotated_jwt
+
+    - name: Container ids after rotating jwt
+      ansible.builtin.command: "{{ compose }} ps -q {{ item }}"
+      register: ids_after_jwt
+      changed_when: false
+      loop: [authelia, vaultwarden]
+
+    - name: Regenerated jwt is valid and only Authelia was recreated
+      ansible.builtin.assert:
+        that:
+          - rotated_jwt.stat.exists
+          - rotated_jwt.stat.mode == '0440'
+          - rotated_jwt.stat.size == 64
+          - ids_after_jwt.results[0].stdout != ids_after_vw.results[0].stdout
+          - ids_after_jwt.results[1].stdout == ids_after_vw.results[1].stdout
+        quiet: true
+
+    # ---- 1d. Vaultwarden admin token quoting preserves '$' signs in the container env
+    #         (only runs when MOLECULE_VAULTWARDEN_TEST_ADMIN_HASH is provided)
+    - name: Vaultwarden admin token quoting
+      when: test_admin_token | length > 0
+      block:
+        - name: Configure a Vaultwarden admin token
+          ansible.builtin.include_role:
+            name: identity
+          vars:
+            authelia_default_policy: one_factor
+            vaultwarden_invitations_allowed: false
+            vaultwarden_admin_token: "{{ test_admin_token }}"
+
+        - name: Inspect the Vaultwarden container environment
+          ansible.builtin.command:
+            argv:
+              - docker
+              - inspect
+              - --format
+              - "{% raw %}{{range .Config.Env}}{{println .}}{{end}}{% endraw %}"
+              - identity-vaultwarden-1
+          register: vw_env
+          changed_when: false
+          no_log: true
+
+        - name: Vaultwarden ADMIN_TOKEN is preserved verbatim without '$' expansion
+          ansible.builtin.assert:
+            that:
+              - ('ADMIN_TOKEN=' ~ test_admin_token) in vw_env.stdout_lines
+            quiet: true
+          no_log: true
+
+        - name: Disable the Vaultwarden admin token again
+          ansible.builtin.include_role:
+            name: identity
+          vars:
+            authelia_default_policy: one_factor
+            vaultwarden_invitations_allowed: false
+            vaultwarden_admin_token: ""
+
+    # ---- 1e. SMTP path: password secret installed, Authelia healthy, secret removed again
+    - name: Enable the SMTP notifier
+      ansible.builtin.include_role:
+        name: identity
+      vars:
+        authelia_default_policy: one_factor
+        vaultwarden_invitations_allowed: false
+        authelia_smtp_address: "submission://smtp.invalid:587"
+        authelia_smtp_username: tester
+        authelia_smtp_password: molecule-smtp-secret
+        authelia_notifier_disable_startup_check: true
+
+    - name: Stat the SMTP password secret
+      ansible.builtin.stat:
+        path: /srv/identity/secrets/authelia_smtp_password
+      register: smtp_secret
+
+    - name: The SMTP password is installed root:identity 0440
+      ansible.builtin.assert:
+        that:
+          - smtp_secret.stat.exists
+          - smtp_secret.stat.mode == '0440'
+          - smtp_secret.stat.pw_name == 'root'
+          - smtp_secret.stat.gr_name == 'identity'
+        quiet: true
+
+    - name: Authelia is healthy with SMTP configured
+      ansible.builtin.uri:
+        url: "http://{{ ansible_facts['default_ipv4']['address'] }}:9091/api/health"
+        status_code: 200
+      register: smtp_health
+      until: smtp_health.status == 200
+      retries: 12
+      delay: 5
+
+    - name: Disable the SMTP notifier again
+      ansible.builtin.include_role:
+        name: identity
+      vars:
+        authelia_default_policy: one_factor
+        vaultwarden_invitations_allowed: false
+
+    - name: Stat the SMTP password secret after disabling
+      ansible.builtin.stat:
+        path: /srv/identity/secrets/authelia_smtp_password
+      register: smtp_secret_gone
+
+    - name: The stale SMTP password is removed
+      ansible.builtin.assert:
+        that: not smtp_secret_gone.stat.exists
+        quiet: true
+
+    # ---- 2. Restore drill: the documented procedure (README "Backup and restore"), in place
+    - name: Stop the stack
+      ansible.builtin.command: "{{ compose }} stop"
+      changed_when: true
+
+    # Run as the service account, exactly like the containers and the dump script do.
+    - name: Write a marker into both databases
+      ansible.builtin.command:
+        argv:
+          - setpriv
+          - --reuid=10010
+          - --regid=10010
+          - --clear-groups
+          - sqlite3
+          - "{{ item }}"
+          - >-
+            CREATE TABLE IF NOT EXISTS molecule_marker (v TEXT);
+            DELETE FROM molecule_marker;
+            INSERT INTO molecule_marker VALUES ('restore-ok');
+      changed_when: true
+      loop:
+        - /srv/identity/vaultwarden/db.sqlite3
+        - /srv/identity/authelia/data/db.sqlite3
+
+    - name: Take the backup dumps (as restic would, from root)
+      ansible.builtin.command: /usr/local/sbin/identity-backup-dump
+      changed_when: true
+
+    - name: Destroy the live databases (simulated disaster)
+      ansible.builtin.shell: rm -f /srv/identity/vaultwarden/db.sqlite3* /srv/identity/authelia/data/db.sqlite3*
+      changed_when: true
+
+    - name: Restore as the README describes
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          install -m 0600 -o identity -g identity \
+            /srv/identity/backup/vaultwarden.sqlite3 \
+            /srv/identity/vaultwarden/db.sqlite3
+          install -m 0600 -o identity -g identity \
+            /srv/identity/backup/authelia.sqlite3 \
+            /srv/identity/authelia/data/db.sqlite3
+          rm -f /srv/identity/vaultwarden/db.sqlite3-wal /srv/identity/vaultwarden/db.sqlite3-shm
+          rm -f /srv/identity/authelia/data/db.sqlite3-wal /srv/identity/authelia/data/db.sqlite3-shm
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Start the stack on the restored databases
+      community.docker.docker_compose_v2:
+        project_src: /opt/identity
+        state: present
+        wait: true
+        wait_timeout: 120
+
+    - name: Services are healthy on restored data
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        status_code: 200
+      register: restored_health
+      until: restored_health.status == 200
+      retries: 12
+      delay: 5
+      loop:
+        - "http://{{ ansible_facts['default_ipv4']['address'] }}:9091/api/health"
+        - "http://{{ ansible_facts['default_ipv4']['address'] }}:8080/alive"
+
+    - name: Read the marker back from the live databases
+      ansible.builtin.command: "{{ as_svc }} sqlite3 -readonly {{ item }} 'SELECT v FROM molecule_marker;'"
+      register: marker
+      changed_when: false
+      failed_when: marker.stdout != 'restore-ok'
+      loop:
+        - /srv/identity/vaultwarden/db.sqlite3
+        - /srv/identity/authelia/data/db.sqlite3
+
+    # ---- 3. Image upgrade (only when upgrade versions are supplied)
+    - name: Upgrade the images
+      when: (upgrade_vw | length > 0) or (upgrade_au | length > 0)
+      block:
+        - name: Run the role with the new versions
+          ansible.builtin.include_role:
+            name: identity
+          vars:
+            vaultwarden_version: "{{ upgrade_vw | default(test_vaultwarden_version, true) }}"
+            authelia_version: "{{ upgrade_au | default(test_authelia_version, true) }}"
+
+        - name: Images in use
+          ansible.builtin.shell:
+            cmd: "docker inspect --format '{% raw %}{{.Config.Image}}{% endraw %}' $({{ compose }} ps -q {{ item }})"
+          register: images
+          changed_when: false
+          loop: [vaultwarden, authelia]
+
+        - name: New tags are running
+          ansible.builtin.assert:
+            that:
+              - (upgrade_vw | length == 0) or (upgrade_vw in images.results[0].stdout)
+              - (upgrade_au | length == 0) or (upgrade_au in images.results[1].stdout)
+            quiet: true
+
+        - name: Healthy after the upgrade
+          ansible.builtin.uri:
+            url: "{{ item }}"
+            status_code: 200
+          register: upgraded_health
+          until: upgraded_health.status == 200
+          retries: 12
+          delay: 5
+          loop:
+            - "http://{{ ansible_facts['default_ipv4']['address'] }}:9091/api/health"
+            - "http://{{ ansible_facts['default_ipv4']['address'] }}:8080/alive"
+
+    # ---- 4. Docker daemon restart: the ingress unit re-applies (PartOf=docker.service)
+    #         and the stack recovers
+    - name: Restart the Docker daemon
+      ansible.builtin.systemd:
+        name: docker.service
+        state: restarted
+
+    - name: Wait for the ingress filter unit to be active again
+      ansible.builtin.systemd:
+        name: identity-ingress.service
+      register: ingress_unit_state
+      until: ingress_unit_state.status.ActiveState | default('') == 'active'
+      retries: 12
+      delay: 5
+      changed_when: false
+      failed_when: false
+
+    - name: The ingress filter unit is active after the Docker restart
+      ansible.builtin.assert:
+        that: ingress_unit_state.status.ActiveState | default('') == 'active'
+        fail_msg: >-
+          identity-ingress.service is
+          '{{ ingress_unit_state.status.ActiveState | default('unknown') }}'
+          after a Docker restart
+        quiet: true
+
+    - name: The chain is still hooked into DOCKER-USER after the Docker restart
+      ansible.builtin.command: iptables -w 10 -C DOCKER-USER -j IDENTITY-INGRESS
+      changed_when: false
+
+    - name: Read the ingress chain after the Docker restart
+      ansible.builtin.command: iptables -w 10 -S IDENTITY-INGRESS
+      register: chain_after_restart
+      changed_when: false
+
+    - name: The re-applied chain has no duplicated rules
+      ansible.builtin.assert:
+        that:
+          - chain_after_restart.stdout_lines | select('search', '-j DROP') | list | length == 2
+        quiet: true
+
+    - name: Services are healthy after the Docker restart
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        status_code: 200
+      register: docker_restart_health
+      until: docker_restart_health.status == 200
+      retries: 12
+      delay: 5
+      loop:
+        - "http://{{ ansible_facts['default_ipv4']['address'] }}:9091/api/health"
+        - "http://{{ ansible_facts['default_ipv4']['address'] }}:8080/alive"

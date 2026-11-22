@@ -1,0 +1,13 @@
+---
+# A variant is the baseline with some inputs changed; validation must ACCEPT it.
+- name: Apply the baseline plus this variant's overrides
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ item.value }}"
+  loop: "{{ (baseline | combine(variant)) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Run the validation
+  ansible.builtin.include_role:
+    name: identity
+    tasks_from: validate.yml

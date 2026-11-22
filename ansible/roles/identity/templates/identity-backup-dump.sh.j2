@@ -1,0 +1,33 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Consistent SQLite copies for offsite backup (live db files are excluded from restic).
+# Runs as the service account so SQLite never creates root-owned -wal/-shm files
+# next to the live databases (which would break the containers' write access).
+set -euo pipefail
+
+if [ "$(id -u)" -eq 0 ]; then
+  exec setpriv --reuid={{ identity_uid }} --regid={{ identity_gid }} --clear-groups /usr/local/sbin/identity-backup-dump "$@"
+fi
+
+umask 077
+dest=/srv/identity/backup
+
+# One dump at a time (restic hook + a human running it by hand must not collide on the tmp files).
+exec 9>"$dest/.lock"
+flock -n 9 || { echo "identity-backup-dump: another dump is running" >&2; exit 1; }
+
+dump() {
+  local src="$1" name="$2" tmp="$dest/.$2.tmp"
+  [ -s "$src" ] || { echo "identity-backup-dump: missing or empty database: $src" >&2; exit 1; }
+  rm -f "$tmp"
+  sqlite3 "$src" ".timeout 10000" ".backup '$tmp'"
+  [ "$(sqlite3 "$tmp" 'PRAGMA integrity_check;')" = "ok" ] \
+    || { echo "identity-backup-dump: integrity check failed for $src" >&2; rm -f "$tmp"; exit 1; }
+  mv "$tmp" "$dest/$name"
+}
+
+dump /srv/identity/vaultwarden/db.sqlite3 vaultwarden.sqlite3
+dump /srv/identity/authelia/data/db.sqlite3 authelia.sqlite3
+
+# Monitoring hook: alert if this file is older than your backup interval.
+date -u +%Y-%m-%dT%H:%M:%SZ > "$dest/last-success"

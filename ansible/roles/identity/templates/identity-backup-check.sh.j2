@@ -1,0 +1,30 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Fails (exit 1, error to stderr and the journal) when the identity backup is stale or incomplete.
+# Run hourly by identity-backup-check.timer; safe to run by hand.
+set -euo pipefail
+
+dest=/srv/identity/backup
+max_age=$(( {{ identity_backup_max_age_hours }} * 3600 ))
+
+fail() {
+  echo "identity-backup-check: $*" >&2
+  logger -p user.err -t identity-backup-check -- "$*" || true
+  exit 1
+}
+
+for f in vaultwarden.sqlite3 authelia.sqlite3; do
+  # Missing dumps are only a failure once the grace period has passed (see the age check below).
+  [ -s "$dest/$f" ] || missing="${missing:-} $f"
+done
+
+# Age is measured from the last successful dump, or from install time before the first one.
+ref="$dest/last-success"
+[ -e "$ref" ] || ref="$dest/.installed"
+[ -e "$ref" ] || fail "neither $dest/last-success nor $dest/.installed exists; run identity-backup-dump"
+
+age=$(( $(date +%s) - $(stat -c %Y "$ref") ))
+if [ "$age" -gt "$max_age" ]; then
+  fail "no successful dump for $(( age / 3600 ))h (limit {{ identity_backup_max_age_hours }}h); is the backup hook running identity-backup-dump?"
+fi
+[ -z "${missing:-}" ] || [ "$ref" = "$dest/.installed" ] || fail "dump file(s) missing or empty:${missing}"

@@ -1,0 +1,99 @@
+# {{ ansible_managed }}
+{# Config-bearing files are bind-mounted or env_file-loaded, which Compose does not always treat as a
+   change. Each service therefore carries a hash of its rendered inputs (including secret checksums for
+   Authelia) as a label, so a change recreates ONLY the affected service, independent of Compose's
+   change detection and of Ansible tags. #}
+{% set secrets_sig = (identity_secret_stat.results | default([])) | map(attribute='stat.checksum', default='') | join(',') %}
+{% set authelia_hash = (lookup('ansible.builtin.template', 'authelia.yml.j2') ~ (authelia_users | to_json(sort_keys=True)) ~ authelia_smtp_password ~ secrets_sig) | hash('sha256') %}
+{% set vaultwarden_hash = (lookup('ansible.builtin.template', 'vaultwarden.env.j2') ~ vaultwarden_smtp_password) | hash('sha256') %}
+name: identity
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "{{ identity_log_max_size }}"
+    max-file: "{{ identity_log_max_file }}"
+
+x-healthcheck: &healthcheck
+  interval: {{ identity_healthcheck_interval }}
+  timeout: {{ identity_healthcheck_timeout }}
+  retries: {{ identity_healthcheck_retries }}
+  start_period: {{ identity_healthcheck_start_period }}
+
+{# The two services never talk to each other, so each gets its own bridge network: a compromised
+   container cannot reach its neighbour over the shared default network. #}
+networks:
+  vaultwarden: {}
+  authelia: {}
+
+services:
+  vaultwarden:
+    image: "vaultwarden/server:{{ vaultwarden_version }}"
+    restart: unless-stopped
+    user: "{{ identity_uid }}:{{ identity_gid }}"
+    env_file: vaultwarden.env
+    labels:
+      identity.config-sha256: "{{ vaultwarden_hash }}"
+    networks: [vaultwarden]
+    volumes:
+      - /srv/identity/vaultwarden:/data
+{% if identity_vw_smtp_auth | bool %}
+      - /srv/identity/secrets/vaultwarden_smtp_password:/run/secrets/smtp_password:ro
+{% endif %}
+    ports:
+      - "{{ identity_bind }}:{{ identity_vaultwarden_port }}:{{ identity_vaultwarden_container_port }}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: {{ identity_pids_limit }}
+    mem_limit: {{ identity_vaultwarden_mem_limit }}
+    stop_grace_period: 30s
+    logging: *logging
+    healthcheck:
+      <<: *healthcheck
+      test: {{ identity_vaultwarden_healthcheck | to_json }}
+
+  authelia:
+    image: "authelia/authelia:{{ authelia_version }}"
+    restart: unless-stopped
+    user: "{{ identity_uid }}:{{ identity_gid }}"
+    labels:
+      identity.config-sha256: "{{ authelia_hash }}"
+    networks: [authelia]
+    environment:
+      TZ: "{{ identity_timezone }}"
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /secrets/jwt
+      AUTHELIA_SESSION_SECRET_FILE: /secrets/session
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /secrets/storage
+{% if authelia_smtp_address | length > 0 and authelia_smtp_password | length > 0 %}
+      AUTHELIA_NOTIFIER_SMTP_PASSWORD_FILE: /secrets/authelia_smtp_password
+{% endif %}
+    volumes:
+      - /srv/identity/authelia/config:/config:ro
+      - /srv/identity/authelia/data:/data
+      - /srv/identity/secrets/jwt:/secrets/jwt:ro
+      - /srv/identity/secrets/session:/secrets/session:ro
+      - /srv/identity/secrets/storage:/secrets/storage:ro
+{% if authelia_smtp_address | length > 0 and authelia_smtp_password | length > 0 %}
+      - /srv/identity/secrets/authelia_smtp_password:/secrets/authelia_smtp_password:ro
+{% endif %}
+      # Authelia writes this file at startup; with a read-only rootfs it needs a writable mount.
+      - /srv/identity/authelia/healthcheck.env:/app/.healthcheck.env
+    ports:
+      - "{{ identity_bind }}:{{ identity_authelia_port }}:{{ identity_authelia_container_port }}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: {{ identity_pids_limit }}
+    mem_limit: {{ identity_authelia_mem_limit }}
+    stop_grace_period: 30s
+    logging: *logging
+    healthcheck:
+      <<: *healthcheck
+      test: {{ identity_authelia_healthcheck | to_json }}

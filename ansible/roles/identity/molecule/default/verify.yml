@@ -1,0 +1,408 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files: [vars.yml]
+  vars:
+    addr: "{{ ansible_facts['default_ipv4']['address'] }}"
+    as_svc: setpriv --reuid=10010 --regid=10010 --clear-groups
+    login_password: "{{ lookup('ansible.builtin.env', 'MOLECULE_AUTHELIA_TEST_PASSWORD') }}"
+  pre_tasks:
+    - name: Confirm disposable test target
+      ansible.builtin.import_tasks: guard.yml
+  tasks:
+    # ---- Containers: hardening, healthchecks, logging, bindings
+    - name: Inspect the containers
+      ansible.builtin.command: "docker inspect {{ item }}"
+      register: inspected
+      changed_when: false
+      loop: [identity-vaultwarden-1, identity-authelia-1]
+
+    - name: Containers are running, healthy and hardened
+      ansible.builtin.assert:
+        that:
+          - c.State.Status == 'running'
+          - c.State.Health.Status == 'healthy'
+          - c.Config.Healthcheck.Test | length > 0
+          - c.Config.User == '10010:10010'
+          - c.HostConfig.ReadonlyRootfs
+          - not c.HostConfig.Privileged
+          - "'ALL' in c.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in c.HostConfig.SecurityOpt"
+          - c.HostConfig.PidsLimit | int > 0
+          - c.HostConfig.Memory | int > 0
+          - c.HostConfig.LogConfig.Config['max-size'] is defined
+          - c.HostConfig.LogConfig.Config['max-file'] is defined
+          - c.Config.Labels['identity.config-sha256'] | length == 64
+          - (c.HostConfig.PortBindings.values() | flatten | map(attribute='HostIp') | unique | list) == [addr]
+        fail_msg: "{{ c.Name }} violates the container baseline"
+        quiet: true
+      vars:
+        c: "{{ (item.stdout | from_json)[0] }}"
+      loop: "{{ inspected.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Vaultwarden runs with the hardened application settings
+      ansible.builtin.assert:
+        that:
+          - "'SIGNUPS_ALLOWED=false' in vw_env"
+          - "'SENDS_ALLOWED=false' in vw_env"
+          - "'PASSWORD_HINTS_ALLOWED=false' in vw_env"
+          - "'DISABLE_ICON_DOWNLOAD=true' in vw_env"
+          - "'HTTP_REQUEST_BLOCK_NON_GLOBAL_IPS=true' in vw_env"
+          - "'IP_HEADER_TRUSTED_PROXIES=192.0.2.10' in vw_env"
+        quiet: true
+      no_log: true
+      vars:
+        vw_env: "{{ (inspected.results[0].stdout | from_json)[0].Config.Env }}"
+
+    # Regression: Authelia 4.39.x aborts startup ("Errors occurred performing startup checks",
+    # no further detail) when it cannot write /app/.healthcheck.env. The rootfs must stay
+    # read-only, so that single file is bind-mounted writable instead.
+    # inspected.results[1] is identity-authelia-1 (loop order above).
+    - name: Authelia keeps a read-only rootfs with only the healthcheck file writable
+      ansible.builtin.assert:
+        that:
+          - au.HostConfig.ReadonlyRootfs
+          - (au.Mounts | selectattr('Destination', 'equalto', '/app/.healthcheck.env') | list | length) == 1
+          - (au.Mounts | selectattr('Destination', 'equalto', '/app/.healthcheck.env') | map(attribute='RW') | first)
+        fail_msg: "identity-authelia-1 must have a read-only rootfs and a writable /app/.healthcheck.env bind mount"
+        quiet: true
+      vars:
+        au: "{{ (inspected.results[1].stdout | from_json)[0] }}"
+
+    - name: Listening sockets
+      ansible.builtin.command: ss -H -ltn
+      register: sockets
+      changed_when: false
+
+    - name: The ports listen on the service address only
+      ansible.builtin.assert:
+        that:
+          - sockets.stdout_lines | select('search', addr ~ ':8080 ') | list | length == 1
+          - sockets.stdout_lines | select('search', addr ~ ':9091 ') | list | length == 1
+          - sockets.stdout_lines | select('search', '(0\.0\.0\.0|\*|\[::\]):(8080|9091) ') | list | length == 0
+        quiet: true
+
+    - name: Each service sits on its own network, with nothing in common
+      ansible.builtin.assert:
+        that:
+          - >-
+            (inspected.results[0].stdout | from_json)[0].NetworkSettings.Networks.keys() | list
+            | intersect((inspected.results[1].stdout | from_json)[0].NetworkSettings.Networks.keys() | list)
+            | length == 0
+        quiet: true
+
+    # ---- Secrets, permissions, no root-owned leaks
+    - name: Stat the secrets
+      ansible.builtin.stat:
+        path: "/srv/identity/secrets/{{ item }}"
+      register: secrets
+      loop: [jwt, session, storage]
+
+    - name: Secrets are root:identity 0440 and 64 bytes
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.mode == '0440'
+          - item.stat.pw_name == 'root'
+          - item.stat.gr_name == 'identity'
+          - item.stat.size == 64
+        quiet: true
+      loop: "{{ secrets.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Stat the directories the service account must traverse
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: traversal
+      loop: [/srv/identity, /srv/identity/authelia]
+
+    # Regression: root:root 0750 here made the backup dump (which drops privileges) fail,
+    # while the containers kept working because dockerd bind-mounts as root.
+    - name: The service group owns the traversal path
+      ansible.builtin.assert:
+        that:
+          - item.stat.gr_name == 'identity'
+          - item.stat.mode == '0750'
+        quiet: true
+      loop: "{{ traversal.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: The service account can open both databases through the real path
+      ansible.builtin.command: "{{ as_svc }} sqlite3 -readonly {{ item }} 'SELECT 1;'"
+      register: svc_open
+      changed_when: false
+      failed_when: svc_open.stdout != '1'
+      loop:
+        - /srv/identity/vaultwarden/db.sqlite3
+        - /srv/identity/authelia/data/db.sqlite3
+
+    - name: Find files not owned by the service account in its data directories
+      ansible.builtin.command: >-
+        find /srv/identity/vaultwarden /srv/identity/authelia/data /srv/identity/backup -not -user identity
+      register: leaked
+      changed_when: false
+
+    - name: No root-owned files leaked into the data directories
+      ansible.builtin.assert:
+        that: leaked.stdout | length == 0
+        fail_msg: "Root-owned files in service data: {{ leaked.stdout_lines }}"
+        quiet: true
+
+    - name: Stat the Authelia healthcheck env file
+      ansible.builtin.stat:
+        path: /srv/identity/authelia/healthcheck.env
+      register: healthcheck_env
+
+    - name: The healthcheck env file is a regular file owned by the service account
+      ansible.builtin.assert:
+        that:
+          - healthcheck_env.stat.exists
+          - healthcheck_env.stat.isreg
+          - healthcheck_env.stat.pw_name == 'identity'
+          - healthcheck_env.stat.gr_name == 'identity'
+          - healthcheck_env.stat.mode == '0600'
+        quiet: true
+
+    # ---- Backup dump
+    - name: Run the backup dump from root, like the restic hook
+      ansible.builtin.command: /usr/local/sbin/identity-backup-dump
+      changed_when: true
+
+    - name: Stat the dumps
+      ansible.builtin.stat:
+        path: "/srv/identity/backup/{{ item }}"
+      register: dumps
+      loop: [vaultwarden.sqlite3, authelia.sqlite3, last-success]
+
+    - name: Dumps exist, are owned by the service account and are private
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.pw_name == 'identity'
+          - item.stat.mode == '0600'
+          - item.stat.size > 0
+        quiet: true
+      loop: "{{ dumps.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Dumps pass an integrity check
+      ansible.builtin.command: "sqlite3 -readonly /srv/identity/backup/{{ item }} 'PRAGMA integrity_check;'"
+      register: integrity
+      changed_when: false
+      failed_when: integrity.stdout != 'ok'
+      loop: [vaultwarden.sqlite3, authelia.sqlite3]
+
+    # ---- Backup monitor
+    - name: The freshness check passes right after a dump
+      ansible.builtin.command: /usr/local/sbin/identity-backup-check
+      changed_when: false
+
+    - name: Age the success marker far past the limit
+      ansible.builtin.file:
+        path: /srv/identity/backup/last-success
+        state: touch
+        mode: "0600"
+        modification_time: "200001010000.00"
+        access_time: preserve
+
+    - name: The freshness check fails on a stale backup
+      ansible.builtin.command: /usr/local/sbin/identity-backup-check
+      register: stale_check
+      changed_when: false
+      failed_when: stale_check.rc == 0
+
+    - name: Take a fresh dump again
+      ansible.builtin.command: /usr/local/sbin/identity-backup-dump
+      changed_when: true
+
+    - name: Query the backup check timer state
+      ansible.builtin.systemd:
+        name: identity-backup-check.timer
+      register: timer_state
+
+    - name: The backup check timer is enabled and active
+      ansible.builtin.assert:
+        that:
+          - timer_state.status.UnitFileState == 'enabled'
+          - timer_state.status.ActiveState == 'active'
+        quiet: true
+
+    # ---- Ingress filter (DOCKER-USER)
+    - name: Read the ingress chain
+      ansible.builtin.command: iptables -S IDENTITY-INGRESS
+      register: chain
+      changed_when: false
+
+    - name: Check the chain is hooked into DOCKER-USER
+      ansible.builtin.command: iptables -C DOCKER-USER -j IDENTITY-INGRESS
+      changed_when: false
+
+    - name: The chain allows only the configured sources and drops the rest
+      ansible.builtin.assert:
+        that:
+          - chain.stdout_lines | select('search', '192\.0\.2\.10') | list | length == 2
+          - chain.stdout_lines | select('search', '-j DROP') | list | length == 2
+          - chain.stdout_lines | select('search', '--ctorigdstport 8080') | list | length == 2
+          - chain.stdout_lines | select('search', '--ctorigdstport 9091') | list | length == 2
+        quiet: true
+
+    # ---- Ingress filter ENFORCEMENT: connect from a network namespace behind a veth pair.
+    # Such traffic is DNAT-ed in PREROUTING and forwarded, so it takes the same path as the edge
+    # proxy and traverses DOCKER-USER. The allowed source must connect (positive control, proving
+    # the probe works); a source outside identity_allowed_sources must be dropped.
+    - name: Install the probe tooling
+      ansible.builtin.apt:
+        name: [iproute2, python3]
+        state: present
+        cache_valid_time: 3600
+
+    - name: Probe the ingress filter from a network namespace
+      block:
+        - name: Remove any stale probe namespace
+          ansible.builtin.command: ip netns del identity-probe
+          changed_when: false
+          failed_when: false
+
+        - name: Create the probe namespace
+          ansible.builtin.shell: |
+            set -e
+            ip netns add identity-probe
+            ip link add idprobe0 type veth peer name idprobe1
+            ip link set idprobe1 netns identity-probe
+            ip addr add 192.0.2.1/24 dev idprobe0
+            ip link set idprobe0 up
+            ip netns exec identity-probe ip addr add 192.0.2.10/24 dev idprobe1
+            ip netns exec identity-probe ip addr add 192.0.2.11/24 dev idprobe1
+            ip netns exec identity-probe ip link set lo up
+            ip netns exec identity-probe ip link set idprobe1 up
+            ip netns exec identity-probe ip route add default via 192.0.2.1
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Install the probe script
+          ansible.builtin.copy:
+            dest: /tmp/identity-probe.py
+            mode: "0700"
+            content: |
+              import socket, sys
+              src, dst, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+              s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              s.settimeout(4)
+              s.bind((src, 0))
+              try:
+                  s.connect((dst, port))
+                  print("connected")
+              except OSError:
+                  print("blocked")
+
+        - name: The denied source is not one of the configured sources
+          ansible.builtin.assert:
+            that: "'192.0.2.11' not in identity_allowed_sources and '192.0.2.10' in identity_allowed_sources"
+            quiet: true
+
+        - name: Connect from the allowed and the denied source to both published ports
+          ansible.builtin.command:
+            argv:
+              - ip
+              - netns
+              - exec
+              - identity-probe
+              - python3
+              - /tmp/identity-probe.py
+              - "{{ item.src }}"
+              - "{{ addr }}"
+              - "{{ item.port | string }}"
+          register: probe
+          changed_when: false
+          failed_when: probe.stdout | trim != item.expect
+          loop:
+            - { src: 192.0.2.10, port: 8080, expect: connected }
+            - { src: 192.0.2.10, port: 9091, expect: connected }
+            - { src: 192.0.2.11, port: 8080, expect: blocked }
+            - { src: 192.0.2.11, port: 9091, expect: blocked }
+          loop_control:
+            label: "{{ item.src }} -> {{ item.port }} expects {{ item.expect }}"
+      always:
+        - name: Remove the probe namespace and script
+          ansible.builtin.shell: |
+            ip netns del identity-probe || true
+            ip link del idprobe0 2>/dev/null || true
+            rm -f /tmp/identity-probe.py
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+    # ---- Authelia access control (behaviour, not just configuration)
+    - name: Forward-auth refuses an unauthenticated request to a protected host
+      ansible.builtin.uri:
+        url: "http://{{ addr }}:9091/api/authz/forward-auth"
+        headers:
+          X-Forwarded-Method: GET
+          X-Forwarded-Proto: https
+          X-Forwarded-Host: "app.{{ identity_domain }}"
+          X-Forwarded-Uri: /
+        follow_redirects: none
+        status_code: [302, 303, 401]
+
+    - name: Forward-auth lets the Vaultwarden domain through (bypass policy)
+      ansible.builtin.uri:
+        url: "http://{{ addr }}:9091/api/authz/forward-auth"
+        headers:
+          X-Forwarded-Method: GET
+          X-Forwarded-Proto: https
+          X-Forwarded-Host: "vault.{{ identity_domain }}"
+          X-Forwarded-Uri: /
+        follow_redirects: none
+        status_code: 200
+
+    - name: Forward-auth refuses a host outside the managed domain
+      ansible.builtin.uri:
+        url: "http://{{ addr }}:9091/api/authz/forward-auth"
+        headers:
+          X-Forwarded-Method: GET
+          X-Forwarded-Proto: https
+          X-Forwarded-Host: "app.not-our-domain.example"
+          X-Forwarded-Uri: /
+        follow_redirects: none
+        status_code: [302, 303, 400, 401, 403]
+
+    - name: First factor (needs MOLECULE_AUTHELIA_TEST_PASSWORD)
+      when: login_password | length > 0
+      block:
+        - name: The right password is accepted
+          ansible.builtin.uri:
+            url: "http://{{ addr }}:9091/api/firstfactor"
+            method: POST
+            body_format: json
+            body:
+              username: tester
+              password: "{{ login_password }}"
+              keepMeLoggedIn: false
+            headers:
+              X-Forwarded-Proto: https
+              X-Forwarded-Host: "auth.{{ identity_domain }}"
+            status_code: 200
+          no_log: true
+
+        - name: A wrong password is rejected
+          ansible.builtin.uri:
+            url: "http://{{ addr }}:9091/api/firstfactor"
+            method: POST
+            body_format: json
+            body:
+              username: tester
+              password: definitely-not-the-password
+              keepMeLoggedIn: false
+            headers:
+              X-Forwarded-Proto: https
+              X-Forwarded-Host: "auth.{{ identity_domain }}"
+            status_code: 401
+          no_log: true

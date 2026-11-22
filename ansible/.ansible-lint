@@ -1,15 +1,23 @@
 ---
 profile: production
 strict: true
+
 exclude_paths:
   - ".ansible/"
   - ".cache/"
+  - ".venv/"
   - ".collections/"
   - ".git/"
   - "**/host_vars/*/firewall.generated.yml"
+  - "**/vault.yml"
+  - ansible/roles/identity/molecule/validation/case.yml
 # Temporarily disable some rules during development:
 skip_list:
   - meta-incorrect
   - meta-no-tags
   - meta-video-links
   - var-naming[no-role-prefix]
+kinds:
+  - vars: "**/molecule/**/vars.yml"
+  - yaml: "**/molecule/**/*.yml"
+  - tasks: "**/molecule/*/guard.yml"

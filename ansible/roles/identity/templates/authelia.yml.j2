@@ -1,0 +1,67 @@
+# {{ ansible_managed }}
+theme: auto
+
+server:
+  address: "tcp://0.0.0.0:{{ identity_authelia_container_port }}/"
+
+log:
+  level: {{ authelia_log_level | to_json }}
+
+totp:
+  issuer: {{ identity_domain | to_json }}
+
+authentication_backend:
+  # Users are managed in Ansible; in-UI changes would be reverted on the next run.
+  password_change:
+    disable: true
+  password_reset:
+    disable: true
+  file:
+    path: /config/users_database.yml
+
+access_control:
+  default_policy: deny
+  rules:
+{% if authelia_bypass_domains | length > 0 %}
+    - domain:
+{% for d in authelia_bypass_domains %}
+        - {{ d | to_json }}
+{% endfor %}
+      policy: bypass
+{% endif %}
+    - domain: {{ ('*.' ~ identity_domain) | to_json }}
+      policy: {{ authelia_default_policy | to_json }}
+
+session:
+  cookies:
+    - domain: {{ identity_domain | to_json }}
+      authelia_url: {{ ('https://auth.' ~ identity_domain) | to_json }}
+      expiration: {{ authelia_session_expiration | to_json }}
+      inactivity: {{ authelia_session_inactivity | to_json }}
+      remember_me: {{ authelia_session_remember_me | to_json }}
+
+regulation:
+  max_retries: 3
+  find_time: 2m
+  ban_time: 10m
+
+storage:
+  local:
+    path: /data/db.sqlite3
+
+notifier:
+{% if authelia_smtp_address | length > 0 %}
+{% if authelia_notifier_disable_startup_check | bool %}
+  disable_startup_check: true
+{% endif %}
+  smtp:
+    address: {{ authelia_smtp_address | to_json }}
+{% if authelia_smtp_username | length > 0 %}
+    username: {{ authelia_smtp_username | to_json }}
+{% endif %}
+    sender: {{ authelia_smtp_sender | to_json }}
+{% else %}
+  # No SMTP: one-time links (TOTP/WebAuthn enrolment) land in this file.
+  filesystem:
+    filename: /data/notification.txt
+{% endif %}

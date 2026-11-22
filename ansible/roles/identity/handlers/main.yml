@@ -1,0 +1,6 @@
+---
+- name: Reapply identity ingress filter
+  ansible.builtin.systemd:
+    name: identity-ingress.service
+    state: restarted
+  listen: identity ingress filter changed

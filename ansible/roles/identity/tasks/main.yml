@@ -1,0 +1,41 @@
+---
+- name: Validate inputs
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Preflight checks (platform, address, Docker Compose)
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Detect a fresh host in check mode
+  ansible.builtin.import_tasks: check_mode.yml
+
+- name: Explain the check-mode limit on a fresh host
+  ansible.builtin.debug:
+    msg: >-
+      Check mode on a host without the identity account or compose project validates the inputs
+      and runs the preflight only; the remaining tasks depend on objects that a dry run does not
+      create. Run it for real once, then --check covers the whole role.
+  when: identity_check_limited | bool
+
+- name: Host preparation (packages, service account, directories)
+  ansible.builtin.import_tasks: host.yml
+  when: not (identity_check_limited | bool)
+
+- name: Secrets
+  ansible.builtin.import_tasks: secrets.yml
+  when: not (identity_check_limited | bool)
+
+- name: Service configuration
+  ansible.builtin.import_tasks: config.yml
+  when: not (identity_check_limited | bool)
+
+- name: Backup freshness monitoring
+  ansible.builtin.import_tasks: backup_monitor.yml
+  when: not (identity_check_limited | bool)
+
+- name: Ingress filter (published ports restricted before the stack starts)
+  ansible.builtin.import_tasks: firewall.yml
+  when: not (identity_check_limited | bool)
+
+- name: Stack
+  ansible.builtin.import_tasks: stack.yml
+  when: not (identity_check_limited | bool)

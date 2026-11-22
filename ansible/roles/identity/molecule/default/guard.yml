@@ -1,0 +1,29 @@
+---
+- name: Guard | Check disposable-host marker
+  ansible.builtin.stat:
+    path: /etc/identity-molecule-disposable
+  register: identity_molecule_marker
+
+- name: Guard | Read disposable-host marker
+  ansible.builtin.slurp:
+    src: /etc/identity-molecule-disposable
+  register: identity_molecule_marker_content
+  when: identity_molecule_marker.stat.exists
+
+- name: Guard | Refuse to operate on an unmarked host
+  ansible.builtin.assert:
+    that:
+      - identity_molecule_marker.stat.exists | default(false)
+      - identity_molecule_marker.stat.isreg | default(false)
+      - (identity_molecule_marker.stat.pw_name | default('')) == 'root'
+      - (identity_molecule_marker.stat.mode | default('')) == '0644'
+      - >-
+        (identity_molecule_marker_content.content | default('') | b64decode | trim)
+        == 'MOLECULE_DISPOSABLE_IDENTITY_TARGET'
+    fail_msg: >-
+      Refusing to run Molecule against an unmarked host.
+      This scenario installs Docker and can destroy identity databases.
+      On the disposable VM, create /etc/identity-molecule-disposable
+      containing exactly MOLECULE_DISPOSABLE_IDENTITY_TARGET,
+      owned by root:root with mode 0644.
+    quiet: true

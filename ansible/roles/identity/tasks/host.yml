@@ -1,0 +1,125 @@
+---
+- name: Install host tooling
+  ansible.builtin.apt:
+    name: sqlite3
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the service group
+  ansible.builtin.group:
+    name: identity
+    gid: "{{ identity_gid }}"
+    system: true
+
+- name: Create the service user
+  ansible.builtin.user:
+    name: identity
+    uid: "{{ identity_uid }}"
+    group: identity
+    system: true
+    shell: /usr/sbin/nologin
+    home: /srv/identity
+    create_home: false
+
+# /srv/identity and /srv/identity/authelia MUST be traversable by the service group:
+# identity-backup-dump drops to the service account and opens the databases below them.
+# (The containers do not need this, dockerd does the bind mounts as root, which is
+# exactly why a wrong mode here goes unnoticed until the first backup runs.)
+- name: Create directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /opt/identity
+      mode: "0750"
+    - path: /srv/identity
+      group: identity
+      mode: "0750"
+    - path: /srv/identity/secrets
+      group: identity
+      mode: "0750"
+    - path: /srv/identity/authelia
+      group: identity
+      mode: "0750"
+    - path: /srv/identity/authelia/config
+      group: identity
+      mode: "0750"
+    - path: /srv/identity/authelia/data
+      owner: identity
+      group: identity
+      mode: "0700"
+    - path: /srv/identity/vaultwarden
+      owner: identity
+      group: identity
+      mode: "0700"
+    - path: /srv/identity/backup
+      owner: identity
+      group: identity
+      mode: "0700"
+  loop_control:
+    label: "{{ item.path }}"
+
+# A recursive `file` task walks every attachment on every run and grows with the vault. Look for
+# a single drifted entry instead (stops at the first hit) and repair recursively only then.
+- name: Look for service data not owned by the service account
+  ansible.builtin.command:
+    argv:
+      - find
+      - /srv/identity/authelia/data
+      - /srv/identity/vaultwarden
+      - /srv/identity/backup
+      - "("
+      - -not
+      - -user
+      - identity
+      - -o
+      - -not
+      - -group
+      - identity
+      - ")"
+      - -print
+      - -quit
+  register: identity_data_drift
+  changed_when: false
+  check_mode: false
+
+- name: Repair ownership of service data that drifted
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    recurse: true
+    owner: identity
+    group: identity
+  loop:
+    - /srv/identity/authelia/data
+    - /srv/identity/vaultwarden
+    - /srv/identity/backup
+  when: identity_data_drift.stdout | length > 0
+
+# Authelia writes /app/.healthcheck.env at startup (the file `authelia healthcheck` reads).
+# With a read-only root filesystem that write fails and startup aborts with only a generic
+# "Errors occurred performing startup checks" message. The file is bind-mounted over
+# /app/.healthcheck.env (see compose.yaml.j2) so the rest of the rootfs stays read-only.
+# It must exist BEFORE `compose up`, otherwise Docker creates a directory at the source path.
+# It holds no secrets.
+- name: Create the Authelia healthcheck env file (only if missing)
+  ansible.builtin.copy:
+    content: ""
+    dest: /srv/identity/authelia/healthcheck.env
+    force: false
+    owner: identity
+    group: identity
+    mode: "0600"
+
+# `copy` with force: false only applies owner/mode on creation; enforce them on every run.
+- name: Enforce ownership of the Authelia healthcheck env file
+  ansible.builtin.file:
+    path: /srv/identity/authelia/healthcheck.env
+    state: file
+    owner: identity
+    group: identity
+    mode: "0600"

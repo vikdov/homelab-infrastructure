@@ -1,0 +1,21 @@
+---
+# Unit tests for tasks/validate.yml. Runs on the controller itself: needs no VM, no Docker, no facts,
+# and changes nothing.   molecule test -s validation
+driver:
+  name: default
+  options:
+    managed: false
+platforms:
+  - name: localhost
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  inventory:
+    host_vars:
+      localhost:
+        ansible_connection: local
+scenario:
+  test_sequence: [syntax, converge]
+verifier:
+  name: ansible

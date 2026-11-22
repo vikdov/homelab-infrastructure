@@ -1,0 +1,50 @@
+---
+# Copy to main.yml and replace every <PLACEHOLDER>.
+# Secrets never go here (they live in vault.yml). Anything not set here uses the
+# documented defaults in roles/identity/defaults/main.yml.
+
+# --- Required ---
+identity_domain: "{{ edge_domain }}"
+identity_bind: "<VM_INTERNAL_IPV4>" # must exist on the VM (`ip -4 addr`) e.g. "10.10.10.20"
+
+# Look up the current releases yourself. Digest:
+#   docker buildx imagetools inspect vaultwarden/server:<X.Y.Z>   # top-level "Digest:"
+#   docker buildx imagetools inspect authelia/authelia:<X.Y.Z>
+vaultwarden_version: "<X.Y.Z>@sha256:<DIGEST>"
+authelia_version: "<X.Y.Z>@sha256:<DIGEST>"
+
+authelia_users: "{{ vault_authelia_users | default({}) }}"
+
+# --- Recommended ---
+# Edge proxy address as THIS host sees it (may differ from its SSH address with VLAN/WireGuard/NAT).
+# Filters traffic to Docker's published ports via DOCKER-USER; empty disables the guest-side Docker filter.
+identity_allowed_sources:
+  - "<EDGE_PROXY_IPV4_OR_CIDR>" # e.g. "10.10.20.2"
+
+# --- Optional ---
+# Vaultwarden. Admin hash: docker run --rm -it vaultwarden/server:<X.Y.Z> /vaultwarden hash
+vaultwarden_admin_token: "{{ vault_vaultwarden_admin_token | default('') }}"
+vaultwarden_signups_allowed: false # temporary set true to create first account
+
+# Mail: fill in or delete this whole block (without it, Authelia writes enrolment links to a file).
+# One relay, separate credentials and sender per service. The sender domain must be verified at your provider.
+identity_smtp_host: "<SMTP_HOST>" # e.g. "smtp.resend.com"
+identity_smtp_port: 465
+
+vaultwarden_smtp_host: "{{ identity_smtp_host }}"
+vaultwarden_smtp_port: "{{ identity_smtp_port }}"
+vaultwarden_smtp_username: "<SMTP_LOGIN>" # e.g "resend"
+vaultwarden_smtp_password: "{{ vault_vaultwarden_smtp_password | default('') }}"
+vaultwarden_require_device_email: false # true only once mail is proven reliable (outage = login lockout)
+
+authelia_smtp_address: "submission://{{ identity_smtp_host }}:{{ identity_smtp_port }}"
+authelia_smtp_username: "<SMTP_LOGIN>"
+authelia_smtp_password: "{{ vault_authelia_smtp_password | default('') }}"
+
+# Backup (restic role). Keep as is: the live DB files are excluded on purpose and the
+# dump script produces consistent copies; secrets stay included (Authelia's `storage` key).
+restic_paths: [/srv/identity, /opt/identity]
+restic_excludes:
+  - /srv/identity/vaultwarden/db.sqlite3*
+  - /srv/identity/authelia/data/db.sqlite3*
+restic_pre_commands: [/usr/local/sbin/identity-backup-dump]

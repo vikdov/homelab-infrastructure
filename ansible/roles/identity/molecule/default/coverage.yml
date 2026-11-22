@@ -1,0 +1,35 @@
+---
+# Optional tests are skipped when their environment variable is unset. That is fine while iterating,
+# but a green run must not be mistaken for full coverage: list what is skipped, and fail when
+# MOLECULE_REQUIRE_FULL is set (use it for release runs and CI that has the secrets).
+- name: Work out which optional tests will be skipped
+  ansible.builtin.set_fact:
+    identity_uncovered: >-
+      {%- set ns = namespace(m=[]) -%}
+      {%- for o in identity_optional_coverage -%}
+      {%- if lookup('ansible.builtin.env', o.var) | length == 0 -%}
+      {%- set ns.m = ns.m + [o.var ~ ' (' ~ o.what ~ ')'] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.m | join('; ') }}
+  vars:
+    identity_optional_coverage:
+      - {var: MOLECULE_AUTHELIA_TEST_PASSWORD, what: real first-factor login}
+      - {var: MOLECULE_VAULTWARDEN_TEST_ADMIN_HASH, what: ADMIN_TOKEN quoting}
+      - {var: MOLECULE_VAULTWARDEN_UPGRADE_VERSION, what: Vaultwarden image upgrade}
+      - {var: MOLECULE_AUTHELIA_UPGRADE_VERSION, what: Authelia image upgrade}
+  run_once: true
+
+- name: Report the coverage gap
+  ansible.builtin.debug:
+    msg: "NOT COVERED by this run: {{ identity_uncovered }}"
+  when: identity_uncovered | length > 0
+  run_once: true
+
+- name: Refuse a partial run when full coverage is required
+  ansible.builtin.assert:
+    that: identity_uncovered | length == 0
+    fail_msg: "MOLECULE_REQUIRE_FULL is set but these are unset: {{ identity_uncovered }}"
+    quiet: true
+  when: lookup('ansible.builtin.env', 'MOLECULE_REQUIRE_FULL') | length > 0
+  run_once: true
