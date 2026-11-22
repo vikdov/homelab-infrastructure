@@ -4,7 +4,7 @@ static_routes_list:
   - { to: 10.10.0.0/16, via: 10.10.20.1, dev: eth1 }
 
 # --- Replace before the first run: the traefik role refuses example.* values ---
-traefik_domain: lab.example.com
+traefik_domain: "{{ edge_domain }}"
 traefik_acme_email: you@example.com
 
 # Staging first: confirm issuance works, then set this to false. Flipping the flag stops Traefik,

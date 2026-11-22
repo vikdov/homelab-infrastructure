@@ -44,3 +44,7 @@ tailscale_authkey: "{{ vault_tailscale_authkey | default('') }}"
 tailscale_advertise_routes:
   - 10.10.0.0/16
   - 192.168.1.0/24
+
+# --- Restic paths ---
+restic_paths:
+  - /etc
